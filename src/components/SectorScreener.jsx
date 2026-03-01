@@ -4,6 +4,9 @@ import { useState, useEffect } from 'react';
 const n = (v) => typeof v === 'number' && Number.isFinite(v);
 
 const SECTOR_ICONS = {
+    'Indexes': '📈',
+    'AI': '🧠',
+    'Penny Stocks': '🪙',
     'Technology': '💻',
     'Financial Services': '🏦',
     'Healthcare': '🏥',

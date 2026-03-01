@@ -23,9 +23,8 @@ function VerdictTag({ verdict }) {
 
 export default function DeepResearch({ ticker }) {
     const [data, setData] = useState(null);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [generated, setGenerated] = useState(false);
 
     const generateReport = () => {
         setLoading(true);
@@ -35,33 +34,18 @@ export default function DeepResearch({ ticker }) {
             .then(d => {
                 if (d.error) throw new Error(d.error);
                 setData(d);
-                setGenerated(true);
                 setLoading(false);
             })
             .catch(e => { setError(e.message); setLoading(false); });
     };
 
-    // Reset when ticker changes
+    // Auto-generate when ticker changes
     useEffect(() => {
-        setData(null);
-        setGenerated(false);
-        setError(null);
+        if (ticker) {
+            generateReport();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [ticker]);
-
-    if (!generated && !loading) {
-        return (
-            <div className="dr-prompt">
-                <div className="dr-prompt-icon">🔬</div>
-                <h3>Deep Research Report</h3>
-                <p>Generate a comprehensive institutional-grade equity research report powered by AI. This analysis covers business model, revenue streams, profitability trends, balance sheet health, competitive advantages, management quality, valuation, and investment thesis.</p>
-                <button className="dr-generate-btn" onClick={generateReport}>
-                    <span className="dr-btn-icon">⚡</span>
-                    Generate Deep Research
-                </button>
-                <span className="dr-prompt-note">Takes 15-30 seconds · Powered by Gemini AI</span>
-            </div>
-        );
-    }
 
     if (loading) {
         return (

@@ -405,25 +405,45 @@ def get_peers(ticker):
 
 
 def get_screener(_=None):
-    """Fetch 52W high/low data for top stocks across all sectors"""
+    """Fetch 52W high/low data for top stocks across all sectors dynamically"""
+    import random
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    SECTOR_STOCKS = {
-        "Technology": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ADBE", "ORCL", "INTC"],
-        "Financial Services": ["JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "USB"],
-        "Healthcare": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "LLY", "BMY", "AMGN"],
-        "Consumer Cyclical": ["TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "TJX", "BKNG", "GM"],
-        "Communication Services": ["GOOGL", "META", "DIS", "NFLX", "CMCSA", "T", "VZ", "TMUS", "CHTR", "SPOT"],
-        "Consumer Defensive": ["PG", "KO", "PEP", "WMT", "COST", "CL", "MDLZ", "PM", "MO", "GIS"],
-        "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY", "HAL"],
-        "Industrials": ["UNP", "HON", "UPS", "BA", "CAT", "DE", "GE", "LMT", "RTX", "WM"],
-        "Basic Materials": ["LIN", "APD", "SHW", "ECL", "DD", "NEM", "FCX", "NUE", "VMC", "MLM"],
-        "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "AVB"],
-        "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "SRE", "EXC", "XEL", "ED", "WEC"],
+    # Expanded universe for dynamic sampling (at least 30-40 per sector)
+    SECTOR_STOCKS_UNIVERSE = {
+        "Technology": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ADBE", "ORCL", "INTC", "CSCO", "IBM", "TXN", "QCOM", "AMD", "INTU", "NOW", "AMAT", "MU", "ADI", "LRCX", "PANW", "KLAC", "SNPS", "CDNS", "SNOW", "PLTR", "CRWD", "FTNT", "MCHP"],
+        "Financial Services": ["JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "USB", "PNC", "TFC", "COF", "CME", "ICE", "SPGI", "MCO", "CB", "MMC", "AON", "MET", "PRU", "AFL", "ALL", "TRV", "DFS", "SYF", "KEY", "CFG", "FITB"],
+        "Healthcare": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "LLY", "BMY", "AMGN", "DHR", "ISRG", "SYK", "MDT", "CVS", "ELEV", "ZTS", "BDX", "BSX", "EW", "HCA", "CAH", "MCK", "COR", "CNC", "HUM", "VRTX", "REGN", "BIIB", "ILMN"],
+        "Consumer Cyclical": ["TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "TJX", "BKNG", "GM", "F", "YUM", "CMG", "MAR", "HLT", "CCL", "RCL", "EXPE", "ABNB", "EBAY", "ETSY", "ROST", "BBY", "AZO", "ORLY", "TSCO", "DHI", "LEN", "KMX", "LVS"],
+        "Communication Services": ["GOOGL", "META", "DIS", "NFLX", "CMCSA", "T", "VZ", "TMUS", "CHTR", "SPOT", "EA", "TTWO", "OMC", "IPG", "NWSA", "FOXA", "WBD", "PARA", "LYV", "SIRI", "ROKU", "PINS", "SNAP", "MATCH", "ZG", "LYFT", "UBER", "DASH"],
+        "Consumer Defensive": ["PG", "KO", "PEP", "WMT", "COST", "CL", "MDLZ", "PM", "MO", "GIS", "K", "HNZ", "SYY", "ADM", "TSN", "CPB", "SJM", "CAG", "CHD", "CLX", "KMB", "EL", "TAP", "STZ", "MNST", "DG", "DLTR", "KR", "WBA", "RAD"],
+        "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY", "HAL", "BKR", "KMI", "WMB", "OKE", "TRGP", "HES", "DVN", "PXD", "FANG", "MRO", "CTRA", "EQT", "APA", "OVV", "CHK", "AR", "MTDR", "PR", "CIVI", "SM"],
+        "Industrials": ["UNP", "HON", "UPS", "BA", "CAT", "DE", "GE", "LMT", "RTX", "WM", "CSX", "NSC", "FDX", "NOC", "GD", "TDG", "ETN", "EMR", "PH", "CMI", "PCAR", "ROK", "IR", "AME", "DOV", "ITW", "TT", "CARR", "OTIS", "FAST"],
+        "Basic Materials": ["LIN", "APD", "SHW", "ECL", "DD", "NEM", "FCX", "NUE", "VMC", "MLM", "DOW", "LYB", "CTVA", "FMC", "ALB", "LTHM", "SQM", "CF", "MOS", "NTR", "STLD", "RS", "CMC", "X", "CLF", "AA", "CENX", "MP", "LAC", "PLL"],
+        "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "AVB", "EQR", "INVH", "AMH", "SUI", "ELS", "MAA", "CPT", "UDR", "ESS", "ARE", "BXP", "KIM", "REG", "FRT", "BRX", "VTR", "PEAK", "DOC", "HR", "OHI"],
+        "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "SRE", "EXC", "XEL", "ED", "WEC", "ES", "PEG", "EIX", "AWK", "WTRG", "CMS", "CNP", "LNT", "ATO", "NI", "PNW", "SR", "OGE", "POR", "PNM", "IDA", "MGEE", "SJW", "AWR", "CWT"],
     }
 
+    NEW_SECTORS = {
+        "Indexes": ["SPY", "DIA", "QQQ", "IWM", "VOO", "VTI", "IVV", "VUG", "VTV", "VNQ", "XLF", "XLV", "XLK"],
+        "AI": ["NVDA", "MSFT", "GOOGL", "AMD", "TSM", "PLTR", "SMCI", "AVGO", "ARM", "CRWD", "HPE", "DELL", "IBM", "META", "AMZN", "SNOW", "SOUN", "PATH", "MDB", "C3.AI", "BBAI"],
+        "Penny Stocks": ["MVIS", "SENS", "ZOM", "CTRM", "SNDL", "GTE", "NAKD", "BNGO", "NCTY", "IDEX", "TNXP", "SOS", "XSPA", "IZEA", "OGEN", "JAGX", "TRCH", "SYN", "BIOL", "GSAT"]
+    }
+
+    # Combine all categories and dynamically sample to keep API fast
+    CATEGORIES_TO_FETCH = {}
+    
+    # Always include the new categories (Indexes, AI, Penny Stocks)
+    for cat, pool in NEW_SECTORS.items():
+        # Sample ~12-15 stocks from the pool to keep request fast
+        CATEGORIES_TO_FETCH[cat] = random.sample(pool, min(12, len(pool)))
+        
+    # Add regular sectors with dynamic sampling
+    for sec, pool in SECTOR_STOCKS_UNIVERSE.items():
+        CATEGORIES_TO_FETCH[sec] = random.sample(pool, min(12, len(pool)))
+
     all_symbols = set()
-    for syms in SECTOR_STOCKS.values():
+    for syms in CATEGORIES_TO_FETCH.values():
         all_symbols.update(syms)
 
     def fetch_stock(sym):
@@ -438,15 +458,16 @@ def get_screener(_=None):
             pct_from_high = ((price - high52) / high52) * 100
             pct_from_low = ((price - low52) / low52) * 100
             range_pos = ((price - low52) / (high52 - low52)) * 100 if high52 != low52 else 50
-
+            
+            # ETFs might not have all typical stock metrics
             return {
                 "symbol": info.get("symbol", sym),
-                "name": info.get("shortName", sym),
+                "name": info.get("shortName") or info.get("longName") or sym,
                 "sector": info.get("sector", ""),
                 "industry": info.get("industry", ""),
                 "price": price,
                 "change": round((price - (info.get("regularMarketPreviousClose") or price)) / (info.get("regularMarketPreviousClose") or price) * 100, 2),
-                "marketCap": info.get("marketCap"),
+                "marketCap": info.get("marketCap", info.get("totalAssets")), # fallback for ETFs
                 "fiftyTwoWeekHigh": high52,
                 "fiftyTwoWeekLow": low52,
                 "pctFromHigh": round(pct_from_high, 2),
@@ -457,7 +478,7 @@ def get_screener(_=None):
                 "revenueGrowth": info.get("revenueGrowth"),
                 "profitMargins": info.get("profitMargins"),
                 "returnOnEquity": info.get("returnOnEquity"),
-                "dividendYield": info.get("trailingAnnualDividendYield"),
+                "dividendYield": info.get("trailingAnnualDividendYield") or info.get("yield"),
                 "beta": info.get("beta"),
                 "recommendationKey": info.get("recommendationKey", ""),
                 "targetMeanPrice": info.get("targetMeanPrice"),
@@ -468,22 +489,29 @@ def get_screener(_=None):
         except Exception:
             return None
 
-    # Fetch all stocks concurrently
+    # Fetch all dynamically selected stocks concurrently
     stock_data = {}
-    with ThreadPoolExecutor(max_workers=15) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         futures = {executor.submit(fetch_stock, sym): sym for sym in all_symbols}
         for future in as_completed(futures):
             result = future.result()
             if result:
                 stock_data[result["symbol"]] = result
 
-    # Organize by sector
+    # Organize by sector - ensure Indexes is first
     sectors = {}
-    for sector_name, symbols in SECTOR_STOCKS.items():
+    
+    # Process categories in a specific order (Indexes first)
+    order = ["Indexes", "AI", "Penny Stocks"] + list(SECTOR_STOCKS_UNIVERSE.keys())
+    
+    for category_name in order:
+        symbols = CATEGORIES_TO_FETCH.get(category_name, [])
         stocks = [stock_data[s] for s in symbols if s in stock_data]
         if stocks:
             near_high = sorted(stocks, key=lambda s: s["pctFromHigh"], reverse=True)[:5]
             near_low = sorted(stocks, key=lambda s: s["pctFromLow"])[:5]
+            
+            # Scoring for top picks (ETFs might miss some of these, but that's fine)
             top_picks = sorted(stocks, key=lambda s: (
                 (1 if s.get("recommendationKey") in ("buy", "strong_buy") else 0) * 3 +
                 (1 if (s.get("revenueGrowth") or 0) > 0.1 else 0) * 2 +
@@ -491,7 +519,7 @@ def get_screener(_=None):
                 (1 if (s.get("returnOnEquity") or 0) > 0.15 else 0)
             ), reverse=True)[:5]
 
-            sectors[sector_name] = {
+            sectors[category_name] = {
                 "nearHigh": near_high,
                 "nearLow": near_low,
                 "topPicks": top_picks,
