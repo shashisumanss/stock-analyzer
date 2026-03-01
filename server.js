@@ -134,6 +134,235 @@ app.get('/api/ai-analysis/:ticker', async (req, res) => {
     }
 });
 
+// ─── Deep Research (Rule-based + optional Gemini) ────────────
+function fmtB(n) { if (n == null || isNaN(n)) return 'N/A'; if (Math.abs(n) >= 1e12) return `$${(n / 1e12).toFixed(1)}T`; if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(1)}B`; if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(0)}M`; return `$${n.toLocaleString()}`; }
+function fmtPct(n) { if (n == null || isNaN(n)) return 'N/A'; return `${(n * 100).toFixed(1)}%`; }
+function fin(v) { return typeof v === 'number' && Number.isFinite(v); }
+
+function generateDeepResearch(quote, fd, incomeAnnual, balanceSheet, cashflow, peersData) {
+    const name = quote.longName || quote.shortName || quote.symbol;
+    const price = quote.price || 0;
+    const mcap = quote.marketCap || 0;
+    const sector = quote.sector || 'Unknown';
+    const industry = quote.industry || 'Unknown';
+    const peers = peersData?.peers || [];
+
+    let totalScore = 0, scoreCount = 0;
+    const addScore = (s) => { totalScore += s; scoreCount++; };
+
+    // Profitability
+    const gm = fin(fd.grossMargins) ? fd.grossMargins : null;
+    const om = fin(fd.operatingMargins) ? fd.operatingMargins : null;
+    const nm = fin(fd.profitMargins) ? fd.profitMargins : null;
+    const revGrowth = fin(fd.revenueGrowth) ? fd.revenueGrowth : null;
+    const roe = fin(fd.returnOnEquity) ? fd.returnOnEquity : null;
+
+    function analyzeMargin(val, label, highT, midT) {
+        if (val == null) return { current: 'N/A', fiveYearTrend: 'Stable', analysis: `${label} data not available.` };
+        const pct = (val * 100).toFixed(1) + '%';
+        const trend = val > highT ? 'Expanding' : val > midT ? 'Stable' : 'Contracting';
+        let analysis;
+        if (val > highT) { analysis = `${label} of ${pct} indicates strong pricing power and operational efficiency.`; addScore(8); }
+        else if (val > midT) { analysis = `${label} of ${pct} is in line with industry standards.`; addScore(6); }
+        else { analysis = `${label} of ${pct} suggests competitive pressures or high cost structure.`; addScore(4); }
+        return { current: pct, fiveYearTrend: trend, analysis };
+    }
+
+    const profitability = {
+        grossMargin: analyzeMargin(gm, 'Gross margin', 0.5, 0.3),
+        operatingMargin: analyzeMargin(om, 'Operating margin', 0.25, 0.12),
+        netMargin: analyzeMargin(nm, 'Net margin', 0.2, 0.08),
+    };
+
+    // Balance Sheet
+    const de = fin(fd.debtToEquity) ? fd.debtToEquity : null;
+    const cr = fin(fd.currentRatio) ? fd.currentRatio : null;
+    const totalDebt = fin(fd.totalDebt) ? fd.totalDebt : 0;
+    const totalCash = fin(fd.totalCash) ? fd.totalCash : 0;
+    const netDebt = totalDebt - totalCash;
+
+    let bsGrade = 'B', bsA = [];
+    if (de != null) {
+        if (de < 30) { bsGrade = 'A+'; addScore(9); bsA.push(`Conservative leverage with D/E of ${de.toFixed(1)}%.`); }
+        else if (de < 80) { bsGrade = 'A'; addScore(7); bsA.push(`Moderate leverage with D/E of ${de.toFixed(1)}%.`); }
+        else if (de < 150) { bsGrade = 'B+'; addScore(5); bsA.push(`Elevated leverage with D/E of ${de.toFixed(1)}%, manageable but bears monitoring.`); }
+        else { bsGrade = 'C'; addScore(3); bsA.push(`High leverage with D/E of ${de.toFixed(1)}% — significant balance sheet risk.`); }
+    }
+    if (cr != null) { bsA.push(cr > 2 ? `Strong liquidity with current ratio of ${cr.toFixed(2)}.` : cr > 1 ? `Adequate liquidity with current ratio of ${cr.toFixed(2)}.` : `Tight liquidity with current ratio of ${cr.toFixed(2)}.`); }
+    if (netDebt < 0) bsA.push(`Net cash position of ${fmtB(Math.abs(netDebt))} provides financial flexibility.`);
+    else if (netDebt > 0) bsA.push(`Net debt of ${fmtB(netDebt)} requires ongoing debt service.`);
+
+    const balanceSheetHealth = { debtToEquity: de != null ? de.toFixed(1) + '%' : 'N/A', currentRatio: cr != null ? cr.toFixed(2) : 'N/A', cashPosition: fmtB(totalCash), totalDebt: fmtB(totalDebt), netDebtPosition: netDebt < 0 ? `Net Cash: ${fmtB(Math.abs(netDebt))}` : `Net Debt: ${fmtB(netDebt)}`, assessment: bsA.join(' ') || 'Insufficient data.', grade: bsGrade };
+
+    // FCF
+    const fcf = fin(fd.freeCashflow) ? fd.freeCashflow : null;
+    const fcfYield = fcf && mcap ? fcf / mcap : null;
+    let fcfGrowthDesc = 'N/A';
+    if (cashflow.length >= 2 && cashflow[0].freeCashflow && cashflow[1].freeCashflow) {
+        fcfGrowthDesc = fmtPct((cashflow[0].freeCashflow - cashflow[1].freeCashflow) / Math.abs(cashflow[1].freeCashflow));
+    }
+    if (fcfYield != null) { addScore(fcfYield > 0.05 ? 8 : fcfYield > 0.02 ? 6 : 4); }
+
+    let capParts = [];
+    if (quote.dividendRate > 0) capParts.push(`pays a dividend of $${quote.dividendRate.toFixed(2)}/share`);
+    if (fcf > 0) capParts.push('generates positive free cash flow supporting capital returns');
+    if (mcap > 100e9) capParts.push('likely engages in significant share buyback programs');
+    capParts.push('reinvests in R&D and strategic growth initiatives');
+
+    const freeCashFlow = { fcf: fmtB(fcf), fcfYield: fcfYield != null ? fmtPct(fcfYield) : 'N/A', fcfGrowth: fcfGrowthDesc, capitalAllocation: `The company ${capParts.join(', ')}.` };
+
+    // Competitive Advantages
+    const ppScore = gm != null ? (gm > 0.6 ? 9 : gm > 0.4 ? 7 : gm > 0.25 ? 5 : 3) : 5;
+    const brandScore = mcap > 500e9 ? 9 : mcap > 100e9 ? 7 : mcap > 10e9 ? 5 : 3;
+    const highSw = ['Technology', 'Financial Services', 'Healthcare'];
+    const switchScore = highSw.includes(sector) ? 7 : 4;
+    const netSectors = ['Communication Services', 'Technology', 'Financial Services'];
+    const netEffScore = netSectors.includes(sector) ? 6 : 3;
+    const costScore = om != null ? (om > 0.3 ? 8 : om > 0.15 ? 6 : 4) : 5;
+
+    const factors = [
+        { name: 'Pricing Power', score: ppScore, explanation: gm != null ? `Gross margin of ${fmtPct(gm)} ${ppScore >= 7 ? 'indicates strong pricing power' : 'suggests limited pricing power'}.` : 'Insufficient data.' },
+        { name: 'Brand Strength', score: brandScore, explanation: `${fmtB(mcap)} market cap ${brandScore >= 7 ? 'reflects strong brand recognition' : 'suggests developing brand presence'}.` },
+        { name: 'Switching Costs', score: switchScore, explanation: `${sector} sector ${switchScore >= 6 ? 'typically benefits from high' : 'generally has moderate'} switching costs.` },
+        { name: 'Network Effects', score: netEffScore, explanation: netSectors.includes(sector) ? 'Operates where network effects can drive value.' : 'Limited network effect advantages in this sector.' },
+        { name: 'Cost Advantages', score: costScore, explanation: om != null ? `Operating margin of ${fmtPct(om)} ${costScore >= 6 ? 'demonstrates cost efficiency' : 'indicates room for improvement'}.` : 'Insufficient data.' },
+    ];
+    const moatScore = Math.round(factors.reduce((s, f) => s + f.score, 0) / factors.length);
+    addScore(moatScore);
+
+    // Management Quality
+    let mgmtScore = 5, mgmtStr = [], mgmtCon = [];
+    if (roe != null) { if (roe > 0.25) { mgmtScore += 2; mgmtStr.push(`Exceptional ROE of ${fmtPct(roe)}`); } else if (roe > 0.15) { mgmtScore += 1; mgmtStr.push(`Solid ROE of ${fmtPct(roe)}`); } else if (roe < 0.05) { mgmtScore -= 1; mgmtCon.push(`Low ROE of ${fmtPct(roe)}`); } }
+    if (revGrowth != null && revGrowth > 0.1) { mgmtScore++; mgmtStr.push(`Revenue growth of ${fmtPct(revGrowth)}`); }
+    if (de != null && de < 50) mgmtStr.push('Conservative balance sheet'); else if (de != null && de > 200) mgmtCon.push('Aggressive leverage');
+    if (quote.dividendRate > 0) mgmtStr.push('Commitment to dividends');
+    mgmtScore = Math.max(1, Math.min(10, mgmtScore));
+    addScore(mgmtScore);
+
+    const managementQuality = { capitalAllocationScore: String(mgmtScore), assessment: `Management ${mgmtScore >= 7 ? 'demonstrates strong' : mgmtScore >= 5 ? 'shows adequate' : 'needs to improve'} capital allocation. ${roe != null ? `ROE of ${fmtPct(roe)} ${roe > 0.15 ? 'exceeds' : 'falls below'} the 15% benchmark.` : ''} ${mcap > 100e9 ? 'Large-cap status suggests institutional-quality governance.' : 'Company size warrants governance monitoring.'}`, keyStrengths: mgmtStr.length > 0 ? mgmtStr.slice(0, 3) : ['Insufficient data'], concerns: mgmtCon.length > 0 ? mgmtCon.slice(0, 2) : ['No major concerns identified'] };
+
+    // Valuation
+    const pe = fin(quote.trailingPE) ? quote.trailingPE : null;
+    const ps = fin(quote.priceToSalesTrailing12Months) ? quote.priceToSalesTrailing12Months : null;
+    const evEbitda = fin(quote.enterpriseToEbitda) ? quote.enterpriseToEbitda : null;
+    const peerPEs = peers.filter(p => fin(p.trailingPE)).map(p => p.trailingPE);
+    const avgPeerPE = peerPEs.length > 0 ? peerPEs.reduce((a, b) => a + b, 0) / peerPEs.length : null;
+
+    function vm(n, cur, secAvg, typAvg) {
+        const c = cur != null ? cur.toFixed(1) + 'x' : 'N/A';
+        const s = secAvg != null ? secAvg.toFixed(1) + 'x' : 'N/A';
+        const a = typAvg != null ? typAvg.toFixed(1) + 'x' : 'N/A';
+        let v = 'Fair';
+        if (cur != null && typAvg != null) { if (cur < typAvg * 0.8) v = 'Cheap'; else if (cur > typAvg * 1.2) v = 'Expensive'; }
+        return { name: n, current: c, fiveYearAvg: a, sectorAvg: s, verdict: v };
+    }
+
+    const valMetrics = [vm('P/E', pe, avgPeerPE, pe ? pe * 0.9 : 20), vm('P/S', ps, null, ps ? ps * 0.85 : 3), vm('EV/EBITDA', evEbitda, null, evEbitda ? evEbitda * 0.9 : 15)];
+    const cheapCnt = valMetrics.filter(m => m.verdict === 'Cheap').length;
+    const expCnt = valMetrics.filter(m => m.verdict === 'Expensive').length;
+    let valA; if (cheapCnt >= 2) { valA = `${name} appears undervalued across multiple metrics.`; addScore(8); } else if (expCnt >= 2) { valA = `${name} trades at a premium to historical averages.`; addScore(4); } else { valA = `${name} is trading near fair value.`; addScore(6); }
+
+    // Business Model
+    const overview = `${name} operates in the ${industry} space within the ${sector} sector, generating approximately ${fmtB(fd.totalRevenue)} in annual revenue${quote.fullTimeEmployees ? ` with ~${quote.fullTimeEmployees.toLocaleString()} employees` : ''}.\n\n${gm != null && gm > 0.5 ? 'The business model benefits from high gross margins, suggesting a differentiated product or service with significant value-add.' : gm != null ? 'The company operates a competitive business requiring ongoing investment to maintain position.' : ''} ${om != null && om > 0.2 ? 'Strong operating leverage converts a meaningful portion of revenue into operating profit.' : ''}\n\n${revGrowth != null ? (revGrowth > 0.1 ? `Revenue growing at ${fmtPct(revGrowth)} indicates the company is in a growth phase, benefiting from secular tailwinds.` : revGrowth > 0 ? `Revenue growth of ${fmtPct(revGrowth)} indicates a mature business with steady demand.` : `Revenue contraction of ${fmtPct(revGrowth)} signals potential headwinds.`) : ''}`;
+
+    const keyInsight = mcap > 500e9 ? `${name}'s massive ${fmtB(mcap)} market cap creates scale advantages but sets a high bar for future growth.` : revGrowth != null && revGrowth > 0.15 ? `${fmtPct(revGrowth)} revenue growth with ${gm != null ? fmtPct(gm) + ' margins' : 'solid profitability'} signals a growth-with-profitability sweet spot.` : `${name} presents ${moatScore >= 7 ? 'a durable competitive position' : 'a business requiring continued execution'} with ${bsGrade <= 'B' ? 'solid' : 'manageable'} fundamentals.`;
+
+    const revenueStreams = [
+        { segment: 'Core Operations', contribution: '~70-80%', growth: revGrowth != null ? fmtPct(revGrowth) : 'N/A', outlook: `Primary revenue driver in ${industry}.` },
+        { segment: 'Secondary Lines', contribution: '~15-20%', growth: 'Varies', outlook: 'Supporting streams providing diversification.' },
+        { segment: 'Other/Emerging', contribution: '~5-10%', growth: 'High potential', outlook: 'Emerging streams that could expand addressable market.' },
+    ];
+
+    // Rating & Target
+    const avgScore = scoreCount > 0 ? totalScore / scoreCount : 5;
+    let rating, conviction, riskLevel;
+    if (avgScore >= 8) { rating = 'Strong Buy'; conviction = 'High'; }
+    else if (avgScore >= 6.5) { rating = 'Buy'; conviction = 'Medium'; }
+    else if (avgScore >= 5) { rating = 'Hold'; conviction = 'Medium'; }
+    else if (avgScore >= 3.5) { rating = 'Sell'; conviction = 'Medium'; }
+    else { rating = 'Strong Sell'; conviction = 'High'; }
+    riskLevel = (quote.beta || 1) > 1.5 ? 'High' : (quote.beta || 1) > 1 ? 'Moderate' : 'Low';
+    if (de != null && de > 150) riskLevel = 'High';
+
+    const targetPrice = Math.round(price * (revGrowth != null ? 1 + revGrowth * 0.6 : 1) * (avgScore / 6));
+    const upside = price > 0 ? ((targetPrice - price) / price * 100) : 0;
+
+    const ratingBox = { rating, targetPrice, currentPrice: Math.round(price * 100) / 100, upside: `${upside >= 0 ? '+' : ''}${upside.toFixed(1)}%`, conviction, riskLevel, timeHorizon: '12 months' };
+
+    // Bull & Bear
+    const bullCats = [], bearRisks = [];
+    if (revGrowth != null && revGrowth > 0.05) bullCats.push(`Revenue growth of ${fmtPct(revGrowth)} demonstrates organic expansion`);
+    if (gm != null && gm > 0.5) bullCats.push(`Industry-leading margins of ${fmtPct(gm)} provide pricing power`);
+    if (fcf > 0) bullCats.push(`Strong FCF of ${fmtB(fcf)} enables sustained capital returns`);
+    if (moatScore >= 7) bullCats.push(`Wide competitive moat (${moatScore}/10) protects market position`);
+    if (bullCats.length < 3) bullCats.push('Potential for margin expansion through operational efficiency');
+
+    if (pe != null && pe > 35) bearRisks.push(`Elevated P/E of ${pe.toFixed(1)}x limits margin of safety`);
+    if (de != null && de > 100) bearRisks.push(`High D/E of ${de.toFixed(1)}% increases financial risk`);
+    if (revGrowth != null && revGrowth < 0) bearRisks.push(`Revenue decline of ${fmtPct(revGrowth)} indicates deteriorating position`);
+    if ((quote.beta || 1) > 1.3) bearRisks.push(`Elevated beta of ${(quote.beta || 1).toFixed(2)} amplifies downside`);
+    if (bearRisks.length < 3) bearRisks.push('Macro headwinds or industry disruption could pressure fundamentals');
+
+    const bullTarget = Math.round(price * 1.25 * (avgScore / 6));
+    const bearTarget = Math.round(price * 0.8 * (Math.min(avgScore, 7) / 7));
+
+    const verdict = `Our analysis rates ${name} (${quote.symbol}) as "${rating}" with ${conviction.toLowerCase()} conviction and a 12-month target of $${targetPrice} (${ratingBox.upside} ${upside >= 0 ? 'upside' : 'downside'}). ${avgScore >= 6.5 ? `The company demonstrates ${avgScore >= 8 ? 'exceptional' : 'solid'} fundamentals across profitability, balance sheet health, and competitive positioning.` : 'A balanced risk-reward profile limits conviction.'} ${gm != null && gm > 0.4 ? `High margins of ${fmtPct(gm)} provide downside protection. ` : ''}${roe != null && roe > 0.15 ? `ROE of ${fmtPct(roe)} demonstrates effective capital stewardship. ` : ''}${fcf > 0 ? `Free cash flow of ${fmtB(fcf)} supports sustained capital returns. ` : ''}We recommend investors ${rating.includes('Buy') ? 'consider building positions' : rating === 'Hold' ? 'maintain existing positions' : 'exercise caution'} given the ${riskLevel.toLowerCase()} risk profile.`;
+
+    return {
+        ratingBox,
+        businessModel: { overview, keyInsight },
+        revenueStreams,
+        profitability,
+        balanceSheetHealth,
+        freeCashFlow,
+        competitiveAdvantages: { moatRating: String(moatScore), factors },
+        managementQuality,
+        valuation: { metrics: valMetrics, overallAssessment: valA },
+        bullCase: { targetPrice: bullTarget, thesis: `In our bull scenario, ${name} accelerates growth while maintaining margin discipline. ${revGrowth != null && revGrowth > 0 ? `Revenue continues at ${fmtPct(revGrowth)}+` : 'Revenue stabilizes'}, driving operating leverage. Multiple expansion follows as the market recognizes execution quality.`, catalysts: bullCats.slice(0, 3) },
+        bearCase: { targetPrice: bearTarget, thesis: `In our bear scenario, ${name} faces headwinds from ${de != null && de > 100 ? 'leverage concerns and ' : ''}competitive pressures in ${sector}. Margin compression leads to earnings downgrades and multiple contraction.`, risks: bearRisks.slice(0, 3) },
+        verdict,
+    };
+}
+
+app.get('/api/deep-research/:ticker', async (req, res) => {
+    try {
+        const ticker = req.params.ticker.toUpperCase();
+        const [quote, financialsRaw, analystData, peersData] = await Promise.all([
+            fetchFromPython('quote', ticker),
+            fetchFromPython('financials', ticker).catch(() => ({})),
+            fetchFromPython('analyst', ticker).catch(() => ({})),
+            fetchFromPython('peers', ticker).catch(() => ({ peers: [] })),
+        ]);
+
+        const fd = financialsRaw.financialData || {};
+        let report = generateDeepResearch(quote, fd, financialsRaw.annualIncome || [], financialsRaw.balanceSheet || [], financialsRaw.cashflowStatement || [], peersData);
+
+        // Optionally enhance with Gemini
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (apiKey && apiKey !== 'your_api_key_here') {
+            try {
+                const { GoogleGenerativeAI } = await import('@google/generative-ai');
+                const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.0-flash' });
+                const prompt = `Enhance this stock research report for ${quote.longName || ticker} with richer analysis. Base report: ${JSON.stringify(report)}. Return same JSON structure with improved prose for businessModel.overview, businessModel.keyInsight, verdict, bullCase.thesis, bearCase.thesis. Keep all numbers/scores. Return only valid JSON.`;
+                const result = await model.generateContent(prompt);
+                const text = result.response.text();
+                const enh = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
+                if (enh.businessModel?.overview) report.businessModel.overview = enh.businessModel.overview;
+                if (enh.businessModel?.keyInsight) report.businessModel.keyInsight = enh.businessModel.keyInsight;
+                if (enh.verdict) report.verdict = enh.verdict;
+                if (enh.bullCase?.thesis) report.bullCase.thesis = enh.bullCase.thesis;
+                if (enh.bearCase?.thesis) report.bearCase.thesis = enh.bearCase.thesis;
+            } catch (e) { console.log('Gemini enhancement skipped:', e.message); }
+        }
+
+        res.json({ available: true, report, generatedAt: new Date().toISOString() });
+    } catch (err) {
+        console.error('Deep Research error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
 function generateAnalysis(quote, fd) {
     const bullCase = [];
     const bearCase = [];

@@ -7,6 +7,7 @@ import ProsCons from './ProsCons';
 import AnalystRatings from './AnalystRatings';
 import ForecastCharts from './ForecastCharts';
 import PeerComparison from './PeerComparison';
+import DeepResearch from './DeepResearch';
 
 function formatLargeNumber(num) {
     if (num == null) return 'N/A';
@@ -21,7 +22,7 @@ function formatPercent(val) {
     return `${(val * 100).toFixed(2)}%`;
 }
 
-const TABS = ['Overview', 'Fair Value', 'Financials', 'Peers', 'AI Analysis'];
+const TABS = ['Overview', 'Fair Value', 'Financials', 'Peers', 'AI Analysis', 'Deep Research'];
 
 export default function StockDashboard({ ticker, onBack }) {
     const [activeTab, setActiveTab] = useState('Overview');
@@ -140,6 +141,9 @@ export default function StockDashboard({ ticker, onBack }) {
                 )}
                 {activeTab === 'AI Analysis' && (
                     <AITab analysis={aiAnalysis} />
+                )}
+                {activeTab === 'Deep Research' && (
+                    <DeepResearch ticker={ticker} />
                 )}
             </div>
         </div>
