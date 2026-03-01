@@ -19,39 +19,29 @@ app.use(express.json());
 const PYTHON = resolve(__dirname, '.venv/bin/python3');
 const FETCH_SCRIPT = resolve(__dirname, 'fetch_data.py');
 
-function fetchFromPython(action, ticker) {
-    return new Promise((resolve, reject) => {
-        execFile(PYTHON, [FETCH_SCRIPT, action, ticker], { timeout: 30000 }, (err, stdout, stderr) => {
-            if (err) {
-                reject(new Error(`Python error: ${stderr || err.message}`));
-                return;
-            }
+function fetchFromPython(action, ticker, ...extraArgs) {
+    return new Promise((res, rej) => {
+        execFile(PYTHON, [FETCH_SCRIPT, action, ticker, ...extraArgs], { timeout: 60000 }, (err, stdout, stderr) => {
+            if (err) return rej(new Error(`Python error: ${stderr || err.message}`));
             try {
                 const data = JSON.parse(stdout.trim());
-                if (data.error) {
-                    reject(new Error(data.error));
-                    return;
-                }
-                resolve(data);
+                if (data.error) return rej(new Error(data.error));
+                res(data);
             } catch (e) {
-                reject(new Error(`JSON parse error: ${e.message}\nOutput: ${stdout.slice(0, 500)}`));
+                rej(new Error(`JSON parse error: ${e.message}\nOutput: ${stdout.slice(0, 500)}`));
             }
         });
     });
 }
 
-// ─── Quote endpoint ──────────────────────────────────────────
+// ─── Quote ───────────────────────────────────────────────────
 app.get('/api/quote/:ticker', async (req, res) => {
     try {
-        const { ticker } = req.params;
-        const quote = await fetchFromPython('quote', ticker.toUpperCase());
-
-        // Calculate change from previous close
+        const quote = await fetchFromPython('quote', req.params.ticker.toUpperCase());
         if (quote.price != null && quote.previousClose != null) {
             quote.change = quote.price - quote.previousClose;
             quote.changePercent = (quote.change / quote.previousClose) * 100;
         }
-
         res.json(quote);
     } catch (err) {
         console.error('Quote error:', err.message);
@@ -59,116 +49,225 @@ app.get('/api/quote/:ticker', async (req, res) => {
     }
 });
 
-// ─── Financials endpoint ─────────────────────────────────────
+// ─── Financials ──────────────────────────────────────────────
 app.get('/api/financials/:ticker', async (req, res) => {
     try {
-        const { ticker } = req.params;
-        const data = await fetchFromPython('financials', ticker.toUpperCase());
-        res.json(data);
+        res.json(await fetchFromPython('financials', req.params.ticker.toUpperCase()));
     } catch (err) {
         console.error('Financials error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// ─── Fair value calculation endpoint ─────────────────────────
+// ─── Fair Value ──────────────────────────────────────────────
 app.get('/api/fair-value/:ticker', async (req, res) => {
     try {
-        const { ticker } = req.params;
-        const data = await fetchFromPython('fair-value-data', ticker.toUpperCase());
-
-        const fairValue = calculateFairValue(data.quote, data.financials, null);
-        res.json(fairValue);
+        const data = await fetchFromPython('fair-value-data', req.params.ticker.toUpperCase());
+        res.json(calculateFairValue(data.quote, data.financials, null));
     } catch (err) {
         console.error('Fair value error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// ─── AI analysis endpoint (Gemini) ───────────────────────────
-app.get('/api/ai-analysis/:ticker', async (req, res) => {
+// ─── Price History ───────────────────────────────────────────
+app.get('/api/history/:ticker', async (req, res) => {
     try {
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey || apiKey === 'your_api_key_here') {
-            return res.status(200).json({
-                available: false,
-                message: 'Gemini API key not configured. Set GEMINI_API_KEY in .env file.',
-            });
-        }
-
-        const { ticker } = req.params;
-        const quote = await fetchFromPython('quote', ticker.toUpperCase());
-
-        let financialData = {};
-        try {
-            const fData = await fetchFromPython('financials', ticker.toUpperCase());
-            financialData = fData.financialData || {};
-        } catch { /* optional */ }
-
-        const { GoogleGenerativeAI } = await import('@google/generative-ai');
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
-        const prompt = `You are a senior equity research analyst. Analyze this stock and provide a structured investment analysis.
-
-Stock: ${quote.symbol} (${quote.longName || quote.shortName})
-Current Price: $${quote.price}
-Market Cap: $${quote.marketCap ? (quote.marketCap / 1e9).toFixed(2) + 'B' : 'N/A'}
-P/E Ratio: ${quote.trailingPE?.toFixed(2) || 'N/A'}
-Forward P/E: ${quote.forwardPE?.toFixed(2) || 'N/A'}
-EPS (TTM): $${quote.eps?.toFixed(2) || 'N/A'}
-Dividend Yield: ${quote.dividendYield ? (quote.dividendYield * 100).toFixed(2) + '%' : 'None'}
-Beta: ${quote.beta?.toFixed(2) || 'N/A'}
-52-Week Range: $${quote.fiftyTwoWeekLow} - $${quote.fiftyTwoWeekHigh}
-Revenue Growth: ${financialData.revenueGrowth ? (financialData.revenueGrowth * 100).toFixed(1) + '%' : 'N/A'}
-Profit Margin: ${financialData.profitMargins ? (financialData.profitMargins * 100).toFixed(1) + '%' : 'N/A'}
-ROE: ${financialData.returnOnEquity ? (financialData.returnOnEquity * 100).toFixed(1) + '%' : 'N/A'}
-Debt to Equity: ${financialData.debtToEquity?.toFixed(1) || 'N/A'}
-Free Cash Flow: $${financialData.freeCashflow ? (financialData.freeCashflow / 1e9).toFixed(2) + 'B' : 'N/A'}
-
-Provide your analysis in this exact JSON format (no markdown, pure JSON):
-{
-  "summary": "2-3 sentence executive summary of the investment thesis",
-  "bullCase": ["point 1", "point 2", "point 3"],
-  "bearCase": ["point 1", "point 2", "point 3"],
-  "risks": ["risk 1", "risk 2", "risk 3"],
-  "catalysts": ["catalyst 1", "catalyst 2"],
-  "rating": "Strong Buy | Buy | Hold | Sell | Strong Sell",
-  "confidenceLevel": "High | Medium | Low",
-  "targetPrice": numeric_value_or_null,
-  "timeHorizon": "12 months"
-}`;
-
-        const result = await model.generateContent(prompt);
-        const text = result.response.text();
-
-        let analysis;
-        try {
-            const jsonMatch = text.match(/\{[\s\S]*\}/);
-            analysis = JSON.parse(jsonMatch[0]);
-        } catch {
-            analysis = { summary: text, bullCase: [], bearCase: [], risks: [], catalysts: [], rating: 'N/A', confidenceLevel: 'N/A' };
-        }
-
-        res.json({ available: true, analysis });
+        const { range = '1y', interval = '1d' } = req.query;
+        const data = await fetchFromPython('history', req.params.ticker.toUpperCase(), range, interval);
+        res.json(Array.isArray(data) ? data : []);
     } catch (err) {
-        console.error('AI analysis error:', err.message);
+        console.error('History error:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
 
-// ─── Search / autocomplete endpoint ──────────────────────────
-app.get('/api/search/:query', async (req, res) => {
+// ─── Analyst Ratings & Forecasts ─────────────────────────────
+app.get('/api/analyst/:ticker', async (req, res) => {
     try {
-        const { query } = req.params;
-        const results = await fetchFromPython('search', query);
-        res.json(Array.isArray(results) ? results : []);
+        res.json(await fetchFromPython('analyst', req.params.ticker.toUpperCase()));
     } catch (err) {
-        console.error('Search error:', err.message);
-        res.status(200).json([]);
+        console.error('Analyst error:', err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`\n🚀 Stock Analyzer API running on http://localhost:${PORT}\n`);
+// ─── Peer Comparison ─────────────────────────────────────────
+app.get('/api/peers/:ticker', async (req, res) => {
+    try {
+        res.json(await fetchFromPython('peers', req.params.ticker.toUpperCase()));
+    } catch (err) {
+        console.error('Peers error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
+
+// ─── AI Analysis (Rule-Based + Optional Gemini) ─────────────
+app.get('/api/ai-analysis/:ticker', async (req, res) => {
+    try {
+        const ticker = req.params.ticker.toUpperCase();
+        const quote = await fetchFromPython('quote', ticker);
+        let fd = {};
+        try { fd = (await fetchFromPython('financials', ticker)).financialData || {}; } catch { }
+
+        // Always generate rule-based analysis
+        const analysis = generateAnalysis(quote, fd);
+
+        // Optionally enhance with Gemini
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (apiKey && apiKey !== 'your_api_key_here') {
+            try {
+                const { GoogleGenerativeAI } = await import('@google/generative-ai');
+                const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.0-flash' });
+                const prompt = `Stock: ${quote.symbol} ($${quote.price}), P/E: ${quote.trailingPE?.toFixed(1) || 'N/A'}, Margins: ${fd.profitMargins ? (fd.profitMargins * 100).toFixed(1) + '%' : 'N/A'}, Growth: ${fd.revenueGrowth ? (fd.revenueGrowth * 100).toFixed(1) + '%' : 'N/A'}. Give a 2-sentence investment thesis. JSON only: {"summary":"..."}`;
+                const result = await model.generateContent(prompt);
+                const text = result.response.text();
+                const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
+                if (parsed.summary) analysis.summary = parsed.summary;
+            } catch { /* use rule-based summary */ }
+        }
+
+        res.json({ available: true, analysis });
+    } catch (err) {
+        console.error('AI error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+function generateAnalysis(quote, fd) {
+    const bullCase = [];
+    const bearCase = [];
+    const risks = [];
+    const catalysts = [];
+    let scoreSum = 0;
+    let scoreCount = 0;
+
+    // Revenue growth
+    if (fd.revenueGrowth != null) {
+        if (fd.revenueGrowth > 0.15) { bullCase.push(`Strong revenue growth of ${(fd.revenueGrowth * 100).toFixed(1)}% year-over-year`); scoreSum += 9; }
+        else if (fd.revenueGrowth > 0.05) { bullCase.push(`Solid revenue growth of ${(fd.revenueGrowth * 100).toFixed(1)}%`); scoreSum += 7; }
+        else if (fd.revenueGrowth > 0) { scoreSum += 5; }
+        else { bearCase.push(`Revenue declining at ${(fd.revenueGrowth * 100).toFixed(1)}%`); scoreSum += 3; }
+        scoreCount++;
+    }
+
+    // Earnings growth
+    if (fd.earningsGrowth != null) {
+        if (fd.earningsGrowth > 0.15) { bullCase.push(`Earnings accelerating at ${(fd.earningsGrowth * 100).toFixed(1)}%`); scoreSum += 9; }
+        else if (fd.earningsGrowth > 0) { scoreSum += 6; }
+        else { bearCase.push(`Earnings declining at ${(fd.earningsGrowth * 100).toFixed(1)}%`); scoreSum += 3; }
+        scoreCount++;
+    }
+
+    // Margins
+    if (fd.profitMargins != null) {
+        if (fd.profitMargins > 0.2) { bullCase.push(`High profit margins of ${(fd.profitMargins * 100).toFixed(1)}%, indicating pricing power`); scoreSum += 8; }
+        else if (fd.profitMargins > 0.1) { scoreSum += 6; }
+        else if (fd.profitMargins > 0) { scoreSum += 4; }
+        else { bearCase.push(`Company operating at a loss with ${(fd.profitMargins * 100).toFixed(1)}% margins`); scoreSum += 2; }
+        scoreCount++;
+    }
+
+    // ROE
+    if (fd.returnOnEquity != null) {
+        if (fd.returnOnEquity > 0.2) { bullCase.push(`Excellent return on equity of ${(fd.returnOnEquity * 100).toFixed(1)}%, demonstrating efficient capital allocation`); scoreSum += 9; }
+        else if (fd.returnOnEquity > 0.1) { scoreSum += 6; }
+        else { scoreSum += 3; }
+        scoreCount++;
+    }
+
+    // Free cash flow
+    if (fd.freeCashflow != null) {
+        if (fd.freeCashflow > 5e9) { bullCase.push(`Massive free cash flow of $${(fd.freeCashflow / 1e9).toFixed(1)}B provides flexibility for buybacks, dividends, or acquisitions`); catalysts.push('Strong cash generation supports shareholder returns'); scoreSum += 9; }
+        else if (fd.freeCashflow > 0) { scoreSum += 6; }
+        else { bearCase.push('Negative free cash flow — burning cash'); risks.push('Cash burn may require dilutive financing'); scoreSum += 2; }
+        scoreCount++;
+    }
+
+    // Debt
+    if (fd.debtToEquity != null) {
+        if (fd.debtToEquity > 150) { bearCase.push(`High leverage with debt-to-equity of ${fd.debtToEquity.toFixed(0)}`); risks.push('Elevated debt increases interest rate sensitivity and financial risk'); scoreSum += 3; }
+        else if (fd.debtToEquity > 80) { risks.push('Moderate debt levels may limit financial flexibility'); scoreSum += 5; }
+        else if (fd.debtToEquity < 30) { bullCase.push(`Conservative balance sheet with low debt (D/E: ${fd.debtToEquity.toFixed(0)})`); scoreSum += 8; }
+        else { scoreSum += 6; }
+        scoreCount++;
+    }
+
+    // Valuation
+    if (quote.trailingPE != null) {
+        if (quote.trailingPE > 40) { bearCase.push(`Premium valuation at ${quote.trailingPE.toFixed(1)}x P/E — priced for perfection`); risks.push('High valuation leaves little room for disappointment'); scoreSum += 3; }
+        else if (quote.trailingPE > 25) { risks.push(`Above-average valuation at ${quote.trailingPE.toFixed(1)}x earnings`); scoreSum += 5; }
+        else if (quote.trailingPE < 15) { bullCase.push(`Attractive valuation at just ${quote.trailingPE.toFixed(1)}x earnings`); catalysts.push('Potential for multiple expansion if growth accelerates'); scoreSum += 8; }
+        else { scoreSum += 6; }
+        scoreCount++;
+    }
+
+    // Dividend
+    if (quote.dividendRate && quote.dividendRate > 0) {
+        catalysts.push(`Dividend payment of $${quote.dividendRate.toFixed(2)}/share provides income support`);
+    }
+
+    // Market cap context
+    if (quote.marketCap > 500e9) catalysts.push('Large-cap stability with institutional backing');
+    else if (quote.marketCap < 2e9) risks.push('Small-cap volatility and liquidity risk');
+
+    // Beta
+    if (quote.beta > 1.5) risks.push(`High beta of ${quote.beta.toFixed(2)} means amplified market swings`);
+
+    // Forward growth
+    if (quote.forwardPE && quote.trailingPE && quote.forwardPE < quote.trailingPE * 0.85) {
+        catalysts.push('Forward P/E suggests accelerating earnings growth ahead');
+    }
+
+    // Determine rating
+    const avgScore = scoreCount > 0 ? scoreSum / scoreCount : 5;
+    let rating, confidenceLevel;
+    if (avgScore >= 8) { rating = 'Strong Buy'; confidenceLevel = 'High'; }
+    else if (avgScore >= 6.5) { rating = 'Buy'; confidenceLevel = 'Medium'; }
+    else if (avgScore >= 5) { rating = 'Hold'; confidenceLevel = 'Medium'; }
+    else if (avgScore >= 3.5) { rating = 'Sell'; confidenceLevel = 'Medium'; }
+    else { rating = 'Strong Sell'; confidenceLevel = 'High'; }
+
+    // Target price
+    let targetPrice = null;
+    if (quote.price && quote.trailingPE) {
+        const growthAdj = fd.revenueGrowth != null ? (1 + fd.revenueGrowth * 0.5) : 1;
+        targetPrice = Math.round(quote.price * growthAdj * (avgScore / 6));
+    }
+
+    // Summary
+    const name = quote.longName || quote.shortName || quote.symbol;
+    const summaryParts = [];
+    summaryParts.push(`${name} (${quote.symbol}) is currently trading at $${quote.price?.toFixed(2)}`);
+    if (quote.marketCap) summaryParts[0] += ` with a market cap of $${(quote.marketCap / 1e9).toFixed(0)}B.`;
+    if (bullCase.length > 0) summaryParts.push(`Key strengths include ${bullCase[0].toLowerCase()}.`);
+    if (bearCase.length > 0) summaryParts.push(`However, investors should note ${bearCase[0].toLowerCase()}.`);
+    summaryParts.push(`Our quantitative model rates the stock as "${rating}" based on ${scoreCount} fundamental factors.`);
+
+    return {
+        summary: summaryParts.join(' '),
+        bullCase: bullCase.slice(0, 4),
+        bearCase: bearCase.slice(0, 4),
+        risks: risks.slice(0, 4),
+        catalysts: catalysts.slice(0, 4),
+        rating,
+        confidenceLevel,
+        targetPrice,
+        timeHorizon: '12 months',
+    };
+}
+
+
+
+// ─── Search ──────────────────────────────────────────────────
+app.get('/api/search/:query', async (req, res) => {
+    try {
+        const results = await fetchFromPython('search', req.params.query);
+        res.json(Array.isArray(results) ? results : []);
+    } catch (err) {
+        console.error('Search error:', err.message);
+        res.json([]);
+    }
+});
+
+app.listen(PORT, () => console.log(`\n🚀 Stock Analyzer API running on http://localhost:${PORT}\n`));

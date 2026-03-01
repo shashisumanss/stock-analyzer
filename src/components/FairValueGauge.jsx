@@ -1,5 +1,8 @@
-export default function FairValueGauge({ currentPrice, fairValue, verdict }) {
-    if (!fairValue || !fairValue.low || !fairValue.high) {
+export default function FairValueGauge({ currentPrice, fairValue }) {
+    // fairValue comes from /api/fair-value and has: fairValueRange, verdict, marginOfSafety, methods
+    const fvr = fairValue?.fairValueRange;
+
+    if (!fvr || !fvr.low || !fvr.high) {
         return (
             <div className="gauge-container">
                 <p className="gauge-unavailable">Insufficient data for fair value calculation</p>
@@ -7,7 +10,8 @@ export default function FairValueGauge({ currentPrice, fairValue, verdict }) {
         );
     }
 
-    const { low, mid, high } = fairValue;
+    const { low, mid, high, methodCount } = fvr;
+    const verdict = fairValue.verdict;
 
     // Calculate position on the gauge (0 to 100)
     const rangeMin = low * 0.5;
@@ -66,7 +70,7 @@ export default function FairValueGauge({ currentPrice, fairValue, verdict }) {
                     {/* Current price pointer */}
                     <div className="gauge-pointer" style={{ left: `${pricePosition}%` }}>
                         <div className="pointer-arrow" />
-                        <span className="pointer-label">${currentPrice.toFixed(2)}</span>
+                        <span className="pointer-label">${currentPrice?.toFixed(2)}</span>
                     </div>
                 </div>
 
@@ -92,7 +96,7 @@ export default function FairValueGauge({ currentPrice, fairValue, verdict }) {
                 </div>
                 <div className="gauge-stat">
                     <span className="stat-label">Methods Used</span>
-                    <span className="stat-value neutral">{fairValue.methodCount}</span>
+                    <span className="stat-value neutral">{methodCount || 0}</span>
                 </div>
             </div>
         </div>
