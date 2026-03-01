@@ -3,6 +3,27 @@ import SearchBar from './components/SearchBar';
 import StockDashboard from './components/StockDashboard';
 import SectorScreener from './components/SectorScreener';
 
+function ClyvantaLogo({ size = 28 }) {
+    return (
+        <svg width={size} height={size} viewBox="21 -3 219 233" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="logo-g1" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop stopColor="#00D4FF" />
+                    <stop offset="0.5" stopColor="#0099CC" />
+                    <stop offset="1" stopColor="#0066FF" />
+                </linearGradient>
+                <linearGradient id="logo-g2" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop stopColor="#FF6B35" />
+                    <stop offset="1" stopColor="#F7931E" />
+                </linearGradient>
+            </defs>
+            <path d="M197 66.85C144 13.85 37.5 13.85 37.5 120.35C37.5 226.85 144 226.85 197 173.85" stroke="url(#logo-g1)" strokeWidth="32" strokeLinecap="round" />
+            <path d="M224 93.35C197 66.85 170.5 66.85 144 93.35" stroke="url(#logo-g2)" strokeWidth="16" strokeLinecap="round" />
+            <path d="M224 147.35C197 173.85 170.5 173.85 144 147.35" stroke="url(#logo-g2)" strokeWidth="16" strokeLinecap="round" />
+        </svg>
+    );
+}
+
 function App() {
     const [selectedTicker, setSelectedTicker] = useState(null);
 
@@ -21,10 +42,10 @@ function App() {
             <header className="app-header">
                 <div className="header-content">
                     <div className="logo" onClick={handleBack} style={{ cursor: 'pointer' }}>
-                        <span className="logo-icon">◈</span>
-                        <h1>StockLens</h1>
+                        <ClyvantaLogo size={30} />
+                        <h1>Clyvanta StockLens</h1>
                     </div>
-                    <p className="tagline">AI-Powered Fair Value Analysis</p>
+                    <p className="tagline">AI-Powered Stock Analysis</p>
                 </div>
             </header>
 
@@ -54,7 +75,7 @@ function App() {
             </main>
 
             <footer className="app-footer">
-                <p>Data provided by Yahoo Finance. For informational purposes only — not financial advice.</p>
+                <p>Powered by Clyvanta StockLens · Data from Yahoo Finance (delayed ~15 min) · For informational purposes only — not financial advice.</p>
             </footer>
         </div>
     );

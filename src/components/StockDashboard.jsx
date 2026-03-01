@@ -279,7 +279,7 @@ function FinancialsTab({ financials }) {
             <div className="section-card">
                 <h3>Financial Health</h3>
                 <div className="metrics-grid">
-                    <MetricCard label="Revenue" value={formatLargeNumber(fd.totalRevenue)} trend={fd.revenueGrowth != null ? `${(fd.revenueGrowth * 100).toFixed(1)}%` : null} trendUp={fd.revenueGrowth > 0} />
+                    <MetricCard label="Revenue" value={formatLargeNumber(fd.totalRevenue)} trend={Number.isFinite(fd.revenueGrowth) ? `${(fd.revenueGrowth * 100).toFixed(1)}%` : null} trendUp={fd.revenueGrowth > 0} />
                     <MetricCard label="Gross Profit" value={formatLargeNumber(fd.grossProfits)} />
                     <MetricCard label="Profit Margin" value={fd.profitMargins != null ? formatPercent(fd.profitMargins) : 'N/A'} />
                     <MetricCard label="Operating Margin" value={fd.operatingMargins != null ? formatPercent(fd.operatingMargins) : 'N/A'} />

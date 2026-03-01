@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react';
 
+// Safe number check — returns true only for actual finite numbers
+const n = (v) => typeof v === 'number' && Number.isFinite(v);
+
 const SECTOR_ICONS = {
     'Technology': '💻',
     'Financial Services': '🏦',
@@ -63,17 +66,17 @@ function StockRow({ stock, onClick }) {
                 </div>
             </div>
             <div className="stock-row-metrics">
-                {stock.pctFromHigh != null && (
+                {n(stock.pctFromHigh) && (
                     <span className={`metric-pill ${stock.pctFromHigh > -5 ? 'near-high' : stock.pctFromHigh < -30 ? 'near-low' : ''}`}>
                         {stock.pctFromHigh > 0 ? '+' : ''}{stock.pctFromHigh}% from 52W High
                     </span>
                 )}
-                {stock.revenueGrowth != null && (
+                {n(stock.revenueGrowth) && (
                     <span className={`metric-pill ${stock.revenueGrowth > 0 ? 'positive' : 'negative'}`}>
                         Rev: {(stock.revenueGrowth * 100).toFixed(1)}%
                     </span>
                 )}
-                {stock.trailingPE != null && (
+                {n(stock.trailingPE) && (
                     <span className="metric-pill">P/E: {stock.trailingPE.toFixed(1)}</span>
                 )}
             </div>
@@ -101,7 +104,7 @@ function TopPickCard({ stock, onClick }) {
             </div>
             <p className="top-pick-name">{stock.name}</p>
             <div className="top-pick-metrics">
-                {stock.revenueGrowth != null && (
+                {n(stock.revenueGrowth) && (
                     <div className="tp-metric">
                         <span className="tp-label">Revenue Growth</span>
                         <span className={`tp-value ${stock.revenueGrowth > 0 ? 'positive' : 'negative'}`}>
@@ -109,13 +112,13 @@ function TopPickCard({ stock, onClick }) {
                         </span>
                     </div>
                 )}
-                {stock.profitMargins != null && (
+                {n(stock.profitMargins) && (
                     <div className="tp-metric">
                         <span className="tp-label">Profit Margin</span>
                         <span className="tp-value">{(stock.profitMargins * 100).toFixed(1)}%</span>
                     </div>
                 )}
-                {stock.returnOnEquity != null && (
+                {n(stock.returnOnEquity) && (
                     <div className="tp-metric">
                         <span className="tp-label">ROE</span>
                         <span className="tp-value">{(stock.returnOnEquity * 100).toFixed(1)}%</span>
