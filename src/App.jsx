@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import SearchBar from './components/SearchBar';
 import StockDashboard from './components/StockDashboard';
+import SectorScreener from './components/SectorScreener';
 
 function App() {
     const [selectedTicker, setSelectedTicker] = useState(null);
-    const [isLoading, setIsLoading] = useState(false);
 
     const handleSelectTicker = (ticker) => {
         setSelectedTicker(ticker);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handleBack = () => {
@@ -40,6 +41,9 @@ function App() {
                             </p>
                         </div>
                         <SearchBar onSelect={handleSelectTicker} />
+
+                        {/* Sector Screener */}
+                        <SectorScreener onSelectTicker={handleSelectTicker} />
                     </div>
                 ) : (
                     <StockDashboard

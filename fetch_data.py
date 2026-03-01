@@ -404,6 +404,103 @@ def get_peers(ticker):
     return {"sector": sector, "industry": industry, "peers": peers}
 
 
+def get_screener(_=None):
+    """Fetch 52W high/low data for top stocks across all sectors"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    SECTOR_STOCKS = {
+        "Technology": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ADBE", "ORCL", "INTC"],
+        "Financial Services": ["JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "USB"],
+        "Healthcare": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "LLY", "BMY", "AMGN"],
+        "Consumer Cyclical": ["TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "TJX", "BKNG", "GM"],
+        "Communication Services": ["GOOGL", "META", "DIS", "NFLX", "CMCSA", "T", "VZ", "TMUS", "CHTR", "SPOT"],
+        "Consumer Defensive": ["PG", "KO", "PEP", "WMT", "COST", "CL", "MDLZ", "PM", "MO", "GIS"],
+        "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY", "HAL"],
+        "Industrials": ["UNP", "HON", "UPS", "BA", "CAT", "DE", "GE", "LMT", "RTX", "WM"],
+        "Basic Materials": ["LIN", "APD", "SHW", "ECL", "DD", "NEM", "FCX", "NUE", "VMC", "MLM"],
+        "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "AVB"],
+        "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "SRE", "EXC", "XEL", "ED", "WEC"],
+    }
+
+    all_symbols = set()
+    for syms in SECTOR_STOCKS.values():
+        all_symbols.update(syms)
+
+    def fetch_stock(sym):
+        try:
+            info = yf.Ticker(sym).info
+            price = info.get("regularMarketPrice") or info.get("currentPrice")
+            high52 = info.get("fiftyTwoWeekHigh")
+            low52 = info.get("fiftyTwoWeekLow")
+            if not price or not high52 or not low52:
+                return None
+
+            pct_from_high = ((price - high52) / high52) * 100
+            pct_from_low = ((price - low52) / low52) * 100
+            range_pos = ((price - low52) / (high52 - low52)) * 100 if high52 != low52 else 50
+
+            return {
+                "symbol": info.get("symbol", sym),
+                "name": info.get("shortName", sym),
+                "sector": info.get("sector", ""),
+                "industry": info.get("industry", ""),
+                "price": price,
+                "change": round((price - (info.get("regularMarketPreviousClose") or price)) / (info.get("regularMarketPreviousClose") or price) * 100, 2),
+                "marketCap": info.get("marketCap"),
+                "fiftyTwoWeekHigh": high52,
+                "fiftyTwoWeekLow": low52,
+                "pctFromHigh": round(pct_from_high, 2),
+                "pctFromLow": round(pct_from_low, 2),
+                "rangePosition": round(range_pos, 1),
+                "trailingPE": info.get("trailingPE"),
+                "forwardPE": info.get("forwardPE"),
+                "revenueGrowth": info.get("revenueGrowth"),
+                "profitMargins": info.get("profitMargins"),
+                "returnOnEquity": info.get("returnOnEquity"),
+                "dividendYield": info.get("trailingAnnualDividendYield"),
+                "beta": info.get("beta"),
+                "recommendationKey": info.get("recommendationKey", ""),
+                "targetMeanPrice": info.get("targetMeanPrice"),
+                "earningsGrowth": info.get("earningsGrowth"),
+                "debtToEquity": info.get("debtToEquity"),
+                "freeCashflow": info.get("freeCashflow"),
+            }
+        except Exception:
+            return None
+
+    # Fetch all stocks concurrently
+    stock_data = {}
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = {executor.submit(fetch_stock, sym): sym for sym in all_symbols}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                stock_data[result["symbol"]] = result
+
+    # Organize by sector
+    sectors = {}
+    for sector_name, symbols in SECTOR_STOCKS.items():
+        stocks = [stock_data[s] for s in symbols if s in stock_data]
+        if stocks:
+            near_high = sorted(stocks, key=lambda s: s["pctFromHigh"], reverse=True)[:5]
+            near_low = sorted(stocks, key=lambda s: s["pctFromLow"])[:5]
+            top_picks = sorted(stocks, key=lambda s: (
+                (1 if s.get("recommendationKey") in ("buy", "strong_buy") else 0) * 3 +
+                (1 if (s.get("revenueGrowth") or 0) > 0.1 else 0) * 2 +
+                (1 if (s.get("profitMargins") or 0) > 0.15 else 0) +
+                (1 if (s.get("returnOnEquity") or 0) > 0.15 else 0)
+            ), reverse=True)[:5]
+
+            sectors[sector_name] = {
+                "nearHigh": near_high,
+                "nearLow": near_low,
+                "topPicks": top_picks,
+                "stockCount": len(stocks),
+            }
+
+    return {"sectors": sectors}
+
+
 def search_tickers(query):
     try:
         from yfinance import Search
@@ -457,6 +554,8 @@ def main():
             result = get_peers(ticker)
         elif action == "search":
             result = search_tickers(ticker)
+        elif action == "screener":
+            result = get_screener()
         else:
             result = {"error": f"Unknown action: {action}"}
 

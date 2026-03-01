@@ -259,6 +259,29 @@ function generateAnalysis(quote, fd) {
 
 
 
+// ─── Screener (cached) ───────────────────────────────────────
+let screenerCache = { data: null, ts: 0 };
+app.get('/api/screener', async (req, res) => {
+    try {
+        // Cache for 5 minutes since this is expensive
+        if (screenerCache.data && Date.now() - screenerCache.ts < 300000) {
+            return res.json(screenerCache.data);
+        }
+        const data = await new Promise((resolve, reject) => {
+            execFile(PYTHON, [FETCH_SCRIPT, 'screener', '_'], { timeout: 120000 }, (err, stdout, stderr) => {
+                if (err) return reject(new Error(stderr || err.message));
+                try { resolve(JSON.parse(stdout.trim())); }
+                catch (e) { reject(new Error('Invalid JSON from screener')); }
+            });
+        });
+        screenerCache = { data, ts: Date.now() };
+        res.json(data);
+    } catch (err) {
+        console.error('Screener error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ─── Search ──────────────────────────────────────────────────
 app.get('/api/search/:query', async (req, res) => {
     try {
