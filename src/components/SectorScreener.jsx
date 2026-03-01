@@ -106,6 +106,12 @@ function TopPickCard({ stock, onClick }) {
                 <span className="top-pick-price">${stock.price?.toFixed(2)}</span>
             </div>
             <p className="top-pick-name">{stock.name}</p>
+            {stock.topPickReason && (
+                <div className="tp-reason">
+                    <span className="tp-reason-icon">⭐</span>
+                    <span className="tp-reason-text">{stock.topPickReason}</span>
+                </div>
+            )}
             <div className="top-pick-metrics">
                 {n(stock.revenueGrowth) && (
                     <div className="tp-metric">

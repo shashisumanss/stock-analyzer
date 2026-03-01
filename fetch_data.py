@@ -511,13 +511,27 @@ def get_screener(_=None):
             near_high = sorted(stocks, key=lambda s: s["pctFromHigh"], reverse=True)[:5]
             near_low = sorted(stocks, key=lambda s: s["pctFromLow"])[:5]
             
-            # Scoring for top picks (ETFs might miss some of these, but that's fine)
-            top_picks = sorted(stocks, key=lambda s: (
-                (1 if s.get("recommendationKey") in ("buy", "strong_buy") else 0) * 3 +
-                (1 if (s.get("revenueGrowth") or 0) > 0.1 else 0) * 2 +
-                (1 if (s.get("profitMargins") or 0) > 0.15 else 0) +
-                (1 if (s.get("returnOnEquity") or 0) > 0.15 else 0)
-            ), reverse=True)[:5]
+            # Scoring for top picks
+            for s in stocks:
+                score = 0
+                reasons = []
+                if s.get("recommendationKey") in ("buy", "strong_buy"):
+                    score += 3
+                    reasons.append("Strong Analyst Rating")
+                if (s.get("revenueGrowth") or 0) > 0.1:
+                    score += 2
+                    reasons.append(">10% Revenue Growth")
+                if (s.get("profitMargins") or 0) > 0.15:
+                    score += 1
+                    reasons.append(">15% Profit Margins")
+                if (s.get("returnOnEquity") or 0) > 0.15:
+                    score += 1
+                    reasons.append(">15% ROE")
+                
+                s["_topPickScore"] = score
+                s["topPickReason"] = " • ".join(reasons) if reasons else "Solid Fundamentals"
+
+            top_picks = sorted(stocks, key=lambda s: s["_topPickScore"], reverse=True)[:8]
 
             sectors[category_name] = {
                 "nearHigh": near_high,
