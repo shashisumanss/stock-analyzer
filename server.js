@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { execFile } from 'child_process';
-import { resolve, dirname } from 'path';
+import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { calculateFairValue } from './valuation.js';
 
@@ -10,13 +10,16 @@ dotenv.config();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = 3001;
+// Cloud Run provides the PORT environment variable
+const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
 
 // ─── Python Bridge ───────────────────────────────────────────
-const PYTHON = resolve(__dirname, '.venv/bin/python3');
+// Use system python in Docker, otherwise use local venv
+const isDocker = process.env.NODE_ENV === 'production';
+const PYTHON = isDocker ? 'python3' : resolve(__dirname, '.venv/bin/python3');
 const FETCH_SCRIPT = resolve(__dirname, 'fetch_data.py');
 
 function fetchFromPython(action, ticker, ...extraArgs) {
@@ -521,5 +524,13 @@ app.get('/api/search/:query', async (req, res) => {
         res.json([]);
     }
 });
+
+// Serve React app in production
+if (process.env.NODE_ENV === 'production') {
+    app.use(express.static('dist')); // Serve static files from the 'dist' directory
+    app.get('*', (req, res) => { // Catch-all for unhandled routes
+        res.sendFile(join(__dirname, 'dist', 'index.html')); // Serve index.html
+    });
+}
 
 app.listen(PORT, () => console.log(`\n🚀 Stock Analyzer API running on http://localhost:${PORT}\n`));
