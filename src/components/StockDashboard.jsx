@@ -8,6 +8,7 @@ import AnalystRatings from './AnalystRatings';
 import ForecastCharts from './ForecastCharts';
 import PeerComparison from './PeerComparison';
 import DeepResearch from './DeepResearch';
+import AdBanner from './AdBanner';
 
 function formatLargeNumber(num) {
     if (num == null) return 'N/A';
