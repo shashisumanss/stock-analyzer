@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import AdBanner from './AdBanner';
 
 const RANGES = [
     { label: '1W', period: '5d', interval: '15m' },
@@ -279,6 +280,10 @@ export default function PriceChart({ ticker }) {
                         onMouseLeave={handleMouseLeave}
                     />
                 )}
+            </div>
+
+            <div className="mt-4">
+                <AdBanner dataAdSlot="1092837465" />
             </div>
         </div>
     );

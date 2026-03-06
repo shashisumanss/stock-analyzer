@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import AdBanner from './AdBanner';
 
 // Safe number check — returns true only for actual finite numbers
 const n = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -219,6 +220,10 @@ export default function SectorScreener({ onSelectTicker }) {
             {activeTabData && (
                 <p className="screener-tab-desc">{activeTabData.desc}</p>
             )}
+
+            <div className="my-4">
+                <AdBanner dataAdSlot="5938472910" />
+            </div>
 
             {/* Sector pills */}
             <div className="sector-pills">

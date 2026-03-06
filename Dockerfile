@@ -10,8 +10,8 @@ RUN npm run build
 FROM node:20-alpine AS backend-server
 WORKDIR /app
 
-# Install Python & libraries needed for yfinance
-RUN apk add --no-cache python3 py3-pip g++ make \
+# Install Python & libraries needed for yfinance, and tzdata for pandas timezone support
+RUN apk add --no-cache python3 py3-pip g++ make tzdata \
     && pip3 install --no-cache-dir --break-system-packages yfinance pandas numpy
 
 # Copy backend node config and install prod dependencies

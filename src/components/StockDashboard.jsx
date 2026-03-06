@@ -113,6 +113,8 @@ export default function StockDashboard({ ticker, onBack }) {
                 </div>
             </div>
 
+            <AdBanner dataAdSlot="5432109876" />
+
             {/* Tab navigation */}
             <div className="tab-nav">
                 {TABS.map(tab => (

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import SearchBar from './components/SearchBar';
 import StockDashboard from './components/StockDashboard';
 import SectorScreener from './components/SectorScreener';
+import AdBanner from './components/AdBanner';
 
 function ClyvantaLogo({ size = 28 }) {
     return (
@@ -62,6 +63,11 @@ function App() {
                             </p>
                         </div>
                         <SearchBar onSelect={handleSelectTicker} />
+
+                        {/* Top Ad Banner */}
+                        <div className="max-w-4xl mx-auto w-full px-4">
+                            <AdBanner dataAdSlot="6273849102" />
+                        </div>
 
                         {/* Sector Screener */}
                         <SectorScreener onSelectTicker={handleSelectTicker} />

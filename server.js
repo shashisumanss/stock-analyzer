@@ -25,7 +25,13 @@ const FETCH_SCRIPT = resolve(__dirname, 'fetch_data.py');
 function fetchFromPython(action, ticker, ...extraArgs) {
     return new Promise((res, rej) => {
         execFile(PYTHON, [FETCH_SCRIPT, action, ticker, ...extraArgs], { timeout: 60000 }, (err, stdout, stderr) => {
-            if (err) return rej(new Error(`Python error: ${stderr || err.message}`));
+            if (err) {
+                try {
+                    const data = JSON.parse(stdout.trim());
+                    if (data.error) return rej(new Error(data.error));
+                } catch (_) { }
+                return rej(new Error(`Python error: ${stderr || err.message} | Stdout: ${stdout.slice(0, 500)}`));
+            }
             try {
                 const data = JSON.parse(stdout.trim());
                 if (data.error) return rej(new Error(data.error));
