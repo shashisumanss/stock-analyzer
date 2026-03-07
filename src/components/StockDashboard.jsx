@@ -40,9 +40,9 @@ export default function StockDashboard({ ticker, onBack }) {
         setActiveTab('Overview');
 
         Promise.all([
-            fetch(`/api/quote/${ticker}`).then(r => r.json()),
-            fetch(`/api/financials/${ticker}`).then(r => r.json()),
-            fetch(`/api/fair-value/${ticker}`).then(r => r.json()),
+            fetch(`/api/quote/${ticker}`).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }),
+            fetch(`/api/financials/${ticker}`).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }),
+            fetch(`/api/fair-value/${ticker}`).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); }),
         ])
             .then(([q, f, fv]) => {
                 if (q.error) throw new Error(q.error);
@@ -58,7 +58,7 @@ export default function StockDashboard({ ticker, onBack }) {
 
         // Load AI analysis in background
         fetch(`/api/ai-analysis/${ticker}`)
-            .then(r => r.json())
+            .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); })
             .then(setAiAnalysis)
             .catch(() => { });
     }, [ticker]);

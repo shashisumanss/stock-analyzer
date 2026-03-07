@@ -157,7 +157,7 @@ export default function SectorScreener({ onSelectTicker }) {
 
     useEffect(() => {
         fetch('/api/screener')
-            .then(r => r.json())
+            .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); })
             .then(d => {
                 if (d.error) throw new Error(d.error);
                 setData(d);

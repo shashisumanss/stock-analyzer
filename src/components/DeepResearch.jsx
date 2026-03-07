@@ -30,7 +30,7 @@ export default function DeepResearch({ ticker }) {
         setLoading(true);
         setError(null);
         fetch(`/api/deep-research/${ticker}`)
-            .then(r => r.json())
+            .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); })
             .then(d => {
                 if (d.error) throw new Error(d.error);
                 setData(d);

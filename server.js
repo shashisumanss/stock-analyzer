@@ -1,147 +1,423 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { execFile } from 'child_process';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { calculateFairValue } from './valuation.js';
+import yahooFinance from 'yahoo-finance2';
+import NodeCache from 'node-cache';
 
 dotenv.config();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
-// Cloud Run provides the PORT environment variable
 const PORT = process.env.PORT || 3001;
+
+// General cache configuration
+const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 }); // 1 min default TTL
 
 app.use(cors());
 app.use(express.json());
 
-// ─── Python Bridge ───────────────────────────────────────────
-// Use system python in Docker, otherwise use local venv
-const isDocker = process.env.NODE_ENV === 'production';
-const PYTHON = isDocker ? 'python3' : resolve(__dirname, '.venv/bin/python3');
-const FETCH_SCRIPT = resolve(__dirname, 'fetch_data.py');
-
-function fetchFromPython(action, ticker, ...extraArgs) {
-    return new Promise((res, rej) => {
-        execFile(PYTHON, [FETCH_SCRIPT, action, ticker, ...extraArgs], { timeout: 60000 }, (err, stdout, stderr) => {
-            if (err) {
-                try {
-                    const data = JSON.parse(stdout.trim());
-                    if (data.error) return rej(new Error(data.error));
-                } catch (_) { }
-                return rej(new Error(`Python error: ${stderr || err.message} | Stdout: ${stdout.slice(0, 500)}`));
-            }
-            try {
-                const data = JSON.parse(stdout.trim());
-                if (data.error) return rej(new Error(data.error));
-                res(data);
-            } catch (e) {
-                rej(new Error(`JSON parse error: ${e.message}\nOutput: ${stdout.slice(0, 500)}`));
-            }
-        });
-    });
+// Helper for generating consistent responses that mirror the old Python output
+function handleAsync(fn) {
+    return async (req, res, next) => {
+        try {
+            await fn(req, res, next);
+        } catch (err) {
+            console.error(err.message);
+            res.status(500).json({ error: err.message });
+        }
+    };
 }
 
 // ─── Quote ───────────────────────────────────────────────────
-app.get('/api/quote/:ticker', async (req, res) => {
-    try {
-        const quote = await fetchFromPython('quote', req.params.ticker.toUpperCase());
-        if (quote.price != null && quote.previousClose != null) {
-            quote.change = quote.price - quote.previousClose;
-            quote.changePercent = (quote.change / quote.previousClose) * 100;
-        }
-        res.json(quote);
-    } catch (err) {
-        console.error('Quote error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.get('/api/quote/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `quote_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    const quoteRaw = await yahooFinance.quote(ticker);
+
+    const quote = {
+        symbol: quoteRaw.symbol,
+        shortName: quoteRaw.shortName || '',
+        longName: quoteRaw.longName || quoteRaw.shortName || '',
+        price: quoteRaw.regularMarketPrice,
+        previousClose: quoteRaw.regularMarketPreviousClose,
+        change: quoteRaw.regularMarketChange,
+        changePercent: quoteRaw.regularMarketChangePercent,
+        open: quoteRaw.regularMarketOpen,
+        dayHigh: quoteRaw.regularMarketDayHigh,
+        dayLow: quoteRaw.regularMarketDayLow,
+        volume: quoteRaw.regularMarketVolume,
+        avgVolume: quoteRaw.averageDailyVolume3Month,
+        marketCap: quoteRaw.marketCap,
+        fiftyTwoWeekHigh: quoteRaw.fiftyTwoWeekHigh,
+        fiftyTwoWeekLow: quoteRaw.fiftyTwoWeekLow,
+        trailingPE: quoteRaw.trailingPE,
+        forwardPE: quoteRaw.forwardPE,
+        eps: quoteRaw.epsTrailingTwelveMonths,
+        forwardEps: quoteRaw.epsForward,
+        dividendYield: quoteRaw.trailingAnnualDividendYield,
+        dividendRate: quoteRaw.trailingAnnualDividendRate,
+        exchange: quoteRaw.exchange || '',
+        currency: quoteRaw.currency || 'USD'
+    };
+
+    cache.set(cacheKey, quote, 60); // 1 minute
+    res.json(quote);
+}));
 
 // ─── Financials ──────────────────────────────────────────────
-app.get('/api/financials/:ticker', async (req, res) => {
-    try {
-        res.json(await fetchFromPython('financials', req.params.ticker.toUpperCase()));
-    } catch (err) {
-        console.error('Financials error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.get('/api/financials/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `financials_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    // 'financialData', 'defaultKeyStatistics', 'summaryDetail', 'incomeStatementHistory', 'cashflowStatementHistory', 'balanceSheetHistory'
+    const modules = ['financialData', 'defaultKeyStatistics', 'summaryDetail', 'incomeStatementHistory', 'incomeStatementHistoryQuarterly', 'cashflowStatementHistory', 'balanceSheetHistory'];
+    const data = await yahooFinance.quoteSummary(ticker, { modules });
+
+    // Fallback logic mapping Yahoo Finance Node JS object structure back to Python expectation structure
+    const financialData = data.financialData || {};
+    const defaultKeyStatistics = data.defaultKeyStatistics || {};
+    const summaryDetail = data.summaryDetail || {};
+
+    const mapped = {
+        financialData: {
+            totalRevenue: financialData.totalRevenue,
+            revenueGrowth: financialData.revenueGrowth,
+            grossProfits: financialData.grossMargins, // Fallback mapping
+            profitMargins: financialData.profitMargins,
+            operatingMargins: financialData.operatingMargins,
+            grossMargins: financialData.grossMargins,
+            ebitda: financialData.ebitda,
+            ebitdaMargins: financialData.ebitdaMargins,
+            freeCashflow: financialData.freeCashflow,
+            operatingCashflow: financialData.operatingCashflow,
+            earningsGrowth: financialData.earningsGrowth,
+            totalCash: financialData.totalCash,
+            totalCashPerShare: financialData.totalCashPerShare,
+            totalDebt: financialData.totalDebt,
+            debtToEquity: financialData.debtToEquity,
+            currentRatio: financialData.currentRatio,
+            quickRatio: financialData.quickRatio,
+            returnOnEquity: financialData.returnOnEquity,
+            returnOnAssets: financialData.returnOnAssets,
+            revenuePerShare: financialData.revenuePerShare
+        },
+        defaultKeyStatistics: {
+            enterpriseValue: defaultKeyStatistics.enterpriseValue,
+            enterpriseToRevenue: defaultKeyStatistics.enterpriseToRevenue,
+            enterpriseToEbitda: defaultKeyStatistics.enterpriseToEbitda,
+            pegRatio: defaultKeyStatistics.pegRatio,
+            priceToSalesTrailing12Months: defaultKeyStatistics.priceToSalesTrailing12Months,
+            sharesOutstanding: defaultKeyStatistics.sharesOutstanding
+        },
+        summaryDetail: {
+            trailingPE: summaryDetail.trailingPE,
+            forwardPE: summaryDetail.forwardPE,
+            priceToBook: summaryDetail.priceToBook,
+            dividendYield: summaryDetail.dividendYield,
+            payoutRatio: summaryDetail.payoutRatio
+        },
+        incomeStatement: (data.incomeStatementHistory?.incomeStatementHistory || []).map(inc => ({
+            endDate: inc.endDate?.toISOString() || inc.endDate,
+            totalRevenue: inc.totalRevenue,
+            grossProfit: inc.grossProfit,
+            operatingIncome: inc.operatingIncome,
+            netIncome: inc.netIncomeFromContinuingOps, // Closest match
+            ebitda: inc.ebit, // Closest proxy if ebitda missing
+            totalExpenses: inc.totalOperatingExpenses,
+            costOfRevenue: inc.costOfRevenue,
+            sga: inc.sellingGeneralAdministrative,
+            rnd: inc.researchDevelopment
+        })),
+        quarterlyIncome: (data.incomeStatementHistoryQuarterly?.incomeStatementHistory || []).map(inc => ({
+            endDate: inc.endDate?.toISOString() || inc.endDate,
+            totalRevenue: inc.totalRevenue,
+            grossProfit: inc.grossProfit,
+            operatingIncome: inc.operatingIncome,
+            netIncome: inc.netIncomeFromContinuingOps
+        })),
+        cashflowStatement: (data.cashflowStatementHistory?.cashflowStatements || []).map(cf => ({
+            endDate: cf.endDate?.toISOString() || cf.endDate,
+            operatingCashFlow: cf.totalCashFromOperatingActivities,
+            freeCashFlow: cf.totalCashFromOperatingActivities + (cf.capitalExpenditures || 0), // Rough calc
+            capitalExpenditure: cf.capitalExpenditures,
+            endCashPosition: cf.changeInCash, // Approximation
+            issuanceOfDebt: cf.issuanceOfDebt,
+            shareRepurchase: cf.repurchaseOfStock,
+            dividendsPaid: cf.dividendsPaid
+        })),
+        balanceSheet: (data.balanceSheetHistory?.balanceSheetStatements || []).map(bs => ({
+            endDate: bs.endDate?.toISOString() || bs.endDate,
+            totalAssets: bs.totalAssets,
+            totalLiabilities: bs.totalLiab,
+            totalEquity: bs.totalStockholderEquity,
+            totalDebt: (bs.shortLongTermDebt || 0) + (bs.longTermDebt || 0),
+            cashAndEquivalents: bs.cash,
+            cashAndShortTermInvestments: (bs.cash || 0) + (bs.shortTermInvestments || 0),
+            currentAssets: bs.totalCurrentAssets,
+            currentLiabilities: bs.totalCurrentLiabilities,
+            longTermDebt: bs.longTermDebt,
+            commonEquity: bs.totalStockholderEquity
+        }))
+    };
+
+    cache.set(cacheKey, mapped, 3600); // 1 hour
+    res.json(mapped);
+}));
 
 // ─── Fair Value ──────────────────────────────────────────────
-app.get('/api/fair-value/:ticker', async (req, res) => {
-    try {
-        const data = await fetchFromPython('fair-value-data', req.params.ticker.toUpperCase());
-        res.json(calculateFairValue(data.quote, data.financials, null));
-    } catch (err) {
-        console.error('Fair value error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.get('/api/fair-value/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `fairvalue_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    const modules = ['financialData', 'defaultKeyStatistics'];
+    const [quoteRaw, data] = await Promise.all([
+        yahooFinance.quote(ticker),
+        yahooFinance.quoteSummary(ticker, { modules })
+    ]);
+
+    const fd = data.financialData || {};
+    const ks = data.defaultKeyStatistics || {};
+
+    const quote = {
+        symbol: quoteRaw.symbol,
+        regularMarketPrice: quoteRaw.regularMarketPrice,
+        epsTrailingTwelveMonths: quoteRaw.epsTrailingTwelveMonths,
+        epsForward: quoteRaw.epsForward,
+        bookValue: quoteRaw.bookValue,
+        sharesOutstanding: quoteRaw.sharesOutstanding,
+        marketCap: quoteRaw.marketCap
+    };
+
+    const financials = {
+        financialData: {
+            freeCashflow: fd.freeCashflow,
+            revenueGrowth: fd.revenueGrowth,
+            earningsGrowth: fd.earningsGrowth,
+            totalCash: fd.totalCash,
+            totalDebt: fd.totalDebt,
+            ebitda: fd.ebitda,
+            profitMargins: fd.profitMargins
+        },
+        defaultKeyStatistics: {
+            enterpriseValue: ks.enterpriseValue,
+            sharesOutstanding: ks.sharesOutstanding
+        }
+    };
+
+    const result = calculateFairValue(quote, financials, null);
+    cache.set(cacheKey, result, 3600); // 1 hour
+    res.json(result);
+}));
 
 // ─── Price History ───────────────────────────────────────────
-app.get('/api/history/:ticker', async (req, res) => {
-    try {
-        const { range = '1y', interval = '1d' } = req.query;
-        const data = await fetchFromPython('history', req.params.ticker.toUpperCase(), range, interval);
-        res.json(Array.isArray(data) ? data : []);
-    } catch (err) {
-        console.error('History error:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.get('/api/history/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    let { range = '1y', interval = '1d' } = req.query;
+
+    // Format yf2 compatible dates. Map '1y' -> period1 (Date - 1 yr), period2 (now)
+    const end = new Date();
+    const start = new Date();
+
+    if (range === '1mo') start.setMonth(start.getMonth() - 1);
+    else if (range === '3mo') start.setMonth(start.getMonth() - 3);
+    else if (range === '6mo') start.setMonth(start.getMonth() - 6);
+    else if (range === '1y') start.setFullYear(start.getFullYear() - 1);
+    else if (range === '2y') start.setFullYear(start.getFullYear() - 2);
+    else if (range === '5y') start.setFullYear(start.getFullYear() - 5);
+    else if (range === 'max') start.setFullYear(start.getFullYear() - 20); // Fallback to 20 YRS
+    else start.setFullYear(start.getFullYear() - 1);
+
+    const cacheKey = `history_${ticker}_${range}_${interval}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    const options = { period1: start, period2: end, interval: interval === '1mo' ? '1mo' : interval === '1wk' ? '1wk' : '1d' };
+    const historyData = await yahooFinance.historical(ticker, options);
+
+    const mapped = historyData.map(row => ({
+        time: row.date.toISOString().split('T')[0],
+        open: typeof row.open === 'number' ? Number(row.open.toFixed(2)) : null,
+        high: typeof row.high === 'number' ? Number(row.high.toFixed(2)) : null,
+        low: typeof row.low === 'number' ? Number(row.low.toFixed(2)) : null,
+        close: typeof row.close === 'number' ? Number(row.close.toFixed(2)) : null,
+        volume: row.volume || 0
+    }));
+
+    cache.set(cacheKey, mapped, 3600); // 1 hour cache
+    res.json(mapped);
+}));
 
 // ─── Analyst Ratings & Forecasts ─────────────────────────────
-app.get('/api/analyst/:ticker', async (req, res) => {
-    try {
-        res.json(await fetchFromPython('analyst', req.params.ticker.toUpperCase()));
-    } catch (err) {
-        console.error('Analyst error:', err.message);
-        res.status(500).json({ error: err.message });
+app.get('/api/analyst/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `analyst_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    const modules = ['financialData', 'recommendationTrend', 'earningsHistory', 'earningsTrend'];
+    const data = await yahooFinance.quoteSummary(ticker, { modules });
+    const fd = data.financialData || {};
+
+    const result = {
+        recommendationKey: fd.recommendationKey || '',
+        recommendationMean: fd.recommendationMean,
+        targetHighPrice: fd.targetHighPrice,
+        targetLowPrice: fd.targetLowPrice,
+        targetMeanPrice: fd.targetMeanPrice,
+        targetMedianPrice: fd.targetMedianPrice,
+        numberOfAnalystOpinions: fd.numberOfAnalystOpinions,
+        recommendations: (data.recommendationTrend?.trend || []).map(r => ({
+            period: r.period,
+            strongBuy: r.strongBuy || 0,
+            buy: r.buy || 0,
+            hold: r.hold || 0,
+            sell: r.sell || 0,
+            strongSell: r.strongSell || 0
+        })),
+        epsHistory: [],
+        revenueHistory: []
+    };
+
+    const earningsHistory = data.earningsHistory?.history || [];
+    earningsHistory.forEach(h => {
+        if (h.quarter) {
+            const yearStr = (h.quarter.toISOString ? h.quarter.toISOString().split('-')[0] : String(h.quarter));
+            if (h.epsActual) result.epsHistory.push({ year: yearStr, value: h.epsActual, type: 'actual' });
+        }
+    });
+
+    if (data.earningsTrend?.trend) {
+        data.earningsTrend.trend.forEach(t => {
+            if (t.period && t.period.includes('+1y') && t.earningsEstimate?.avg) {
+                result.epsHistory.push({ year: 'Forward', value: t.earningsEstimate.avg, type: 'estimate' });
+            }
+        });
     }
-});
+
+    cache.set(cacheKey, result, 86400); // 24 hours
+    res.json(result);
+}));
 
 // ─── Peer Comparison ─────────────────────────────────────────
-app.get('/api/peers/:ticker', async (req, res) => {
-    try {
-        res.json(await fetchFromPython('peers', req.params.ticker.toUpperCase()));
-    } catch (err) {
-        console.error('Peers error:', err.message);
-        res.status(500).json({ error: err.message });
+app.get('/api/peers/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `peers_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    const data = await yahooFinance.quoteSummary(ticker, { modules: ['assetProfile'] });
+    const sector = data.assetProfile?.sector || '';
+    const industry = data.assetProfile?.industry || '';
+
+    // Map of well-known sector peers
+    const SECTOR_PEERS = {
+        "Technology": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ADBE", "ORCL", "INTC"],
+        "Financial Services": ["JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "USB"],
+        "Healthcare": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "LLY", "BMY", "AMGN"],
+        "Consumer Cyclical": ["AMZN", "TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "TJX", "BKNG"],
+        "Communication Services": ["GOOGL", "META", "DIS", "NFLX", "CMCSA", "T", "VZ", "TMUS", "CHTR", "SPOT"],
+        "Consumer Defensive": ["PG", "KO", "PEP", "WMT", "COST", "CL", "MDLZ", "PM", "MO", "GIS"],
+        "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY", "PXD"],
+        "Industrials": ["UNP", "HON", "UPS", "BA", "CAT", "DE", "GE", "MMM", "LMT", "RTX"],
+        "Basic Materials": ["LIN", "APD", "SHW", "ECL", "DD", "NEM", "FCX", "NUE", "VMC", "MLM"],
+        "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "AVB"],
+        "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "SRE", "EXC", "XEL", "ED", "WEC"]
+    };
+
+    let peerSymbols = SECTOR_PEERS[sector] || [];
+    peerSymbols = peerSymbols.filter(s => s !== ticker).slice(0, 5);
+
+    if (peerSymbols.length === 0) {
+        return res.json({ sector, industry, peers: [] });
     }
-});
+
+    const peers = [];
+    for (const sym of peerSymbols) {
+        try {
+            const [pQuote, pSumry] = await Promise.all([
+                yahooFinance.quote(sym),
+                yahooFinance.quoteSummary(sym, { modules: ['financialData'] })
+            ]);
+
+            const pf = pSumry.financialData || {};
+
+            peers.push({
+                symbol: pQuote.symbol,
+                name: pQuote.shortName || sym,
+                price: pQuote.regularMarketPrice,
+                marketCap: pQuote.marketCap,
+                trailingPE: pQuote.trailingPE,
+                forwardPE: pQuote.forwardPE,
+                priceToBook: pQuote.priceToBook,
+                dividendYield: pQuote.trailingAnnualDividendYield,
+                revenueGrowth: pf.revenueGrowth,
+                profitMargins: pf.profitMargins,
+                returnOnEquity: pf.returnOnEquity,
+                beta: pf.beta
+            });
+        } catch (e) {
+            // ignore failure for a single peer
+        }
+    }
+
+    const result = { sector, industry, peers };
+    cache.set(cacheKey, result, 86400); // 24 hours
+    res.json(result);
+}));
 
 // ─── AI Analysis (Rule-Based + Optional Gemini) ─────────────
-app.get('/api/ai-analysis/:ticker', async (req, res) => {
-    try {
-        const ticker = req.params.ticker.toUpperCase();
-        const quote = await fetchFromPython('quote', ticker);
-        let fd = {};
-        try { fd = (await fetchFromPython('financials', ticker)).financialData || {}; } catch { }
+app.get('/api/ai-analysis/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `ai_analysis_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
 
-        // Always generate rule-based analysis
-        const analysis = generateAnalysis(quote, fd);
+    const [quoteRaw, data] = await Promise.all([
+        yahooFinance.quote(ticker).catch(() => ({})),
+        yahooFinance.quoteSummary(ticker, { modules: ['financialData'] }).catch(() => ({}))
+    ]);
 
-        // Optionally enhance with Gemini
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (apiKey && apiKey !== 'your_api_key_here') {
-            try {
-                const { GoogleGenerativeAI } = await import('@google/generative-ai');
-                const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.0-flash' });
-                const prompt = `Stock: ${quote.symbol} ($${quote.price}), P/E: ${quote.trailingPE?.toFixed(1) || 'N/A'}, Margins: ${fd.profitMargins ? (fd.profitMargins * 100).toFixed(1) + '%' : 'N/A'}, Growth: ${fd.revenueGrowth ? (fd.revenueGrowth * 100).toFixed(1) + '%' : 'N/A'}. Give a 2-sentence investment thesis. JSON only: {"summary":"..."}`;
-                const result = await model.generateContent(prompt);
-                const text = result.response.text();
-                const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
-                if (parsed.summary) analysis.summary = parsed.summary;
-            } catch { /* use rule-based summary */ }
-        }
+    const quote = {
+        symbol: quoteRaw.symbol || ticker,
+        shortName: quoteRaw.shortName || '',
+        longName: quoteRaw.longName || quoteRaw.shortName || '',
+        price: quoteRaw.regularMarketPrice,
+        previousClose: quoteRaw.regularMarketPreviousClose,
+        change: quoteRaw.regularMarketChange,
+        changePercent: quoteRaw.regularMarketChangePercent,
+        marketCap: quoteRaw.marketCap,
+        trailingPE: quoteRaw.trailingPE,
+        forwardPE: quoteRaw.forwardPE,
+        dividendRate: quoteRaw.trailingAnnualDividendRate,
+        beta: quoteRaw.beta
+    };
 
-        res.json({ available: true, analysis });
-    } catch (err) {
-        console.error('AI error:', err.message);
-        res.status(500).json({ error: err.message });
+    const fd = data.financialData || {};
+
+    // Always generate rule-based analysis
+    const analysis = generateAnalysis(quote, fd);
+
+    // Optionally enhance with Gemini
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey && apiKey !== 'your_api_key_here') {
+        try {
+            const { GoogleGenerativeAI } = await import('@google/generative-ai');
+            const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const prompt = `Stock: ${quote.symbol} ($${quote.price}), P/E: ${quote.trailingPE?.toFixed(1) || 'N/A'}, Margins: ${fd.profitMargins ? (fd.profitMargins * 100).toFixed(1) + '%' : 'N/A'}, Growth: ${fd.revenueGrowth ? (fd.revenueGrowth * 100).toFixed(1) + '%' : 'N/A'}. Give a 2-sentence investment thesis. JSON only: {"summary":"..."}`;
+            const result = await model.generateContent(prompt);
+            const text = result.response.text();
+            const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
+            if (parsed.summary) analysis.summary = parsed.summary;
+        } catch { /* use rule-based summary */ }
     }
-});
+
+    const result = { available: true, analysis };
+    cache.set(cacheKey, result, 3600); // 1 hour 
+    res.json(result);
+}));
 
 // ─── Deep Research (Rule-based + optional Gemini) ────────────
 function fmtB(n) { if (n == null || isNaN(n)) return 'N/A'; if (Math.abs(n) >= 1e12) return `$${(n / 1e12).toFixed(1)}T`; if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(1)}B`; if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(0)}M`; return `$${n.toLocaleString()}`; }
@@ -333,43 +609,69 @@ function generateDeepResearch(quote, fd, incomeAnnual, balanceSheet, cashflow, p
     };
 }
 
-app.get('/api/deep-research/:ticker', async (req, res) => {
-    try {
-        const ticker = req.params.ticker.toUpperCase();
-        const [quote, financialsRaw, analystData, peersData] = await Promise.all([
-            fetchFromPython('quote', ticker),
-            fetchFromPython('financials', ticker).catch(() => ({})),
-            fetchFromPython('analyst', ticker).catch(() => ({})),
-            fetchFromPython('peers', ticker).catch(() => ({ peers: [] })),
-        ]);
+app.get('/api/deep-research/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `deep_research_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
 
-        const fd = financialsRaw.financialData || {};
-        let report = generateDeepResearch(quote, fd, financialsRaw.annualIncome || [], financialsRaw.balanceSheet || [], financialsRaw.cashflowStatement || [], peersData);
+    const modules = ['financialData', 'assetProfile', 'incomeStatementHistory', 'balanceSheetHistory', 'cashflowStatementHistory'];
+    const [quoteRaw, data] = await Promise.all([
+        yahooFinance.quote(ticker).catch(() => ({})),
+        yahooFinance.quoteSummary(ticker, { modules }).catch(() => ({}))
+    ]);
 
-        // Optionally enhance with Gemini
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (apiKey && apiKey !== 'your_api_key_here') {
-            try {
-                const { GoogleGenerativeAI } = await import('@google/generative-ai');
-                const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.0-flash' });
-                const prompt = `Enhance this stock research report for ${quote.longName || ticker} with richer analysis. Base report: ${JSON.stringify(report)}. Return same JSON structure with improved prose for businessModel.overview, businessModel.keyInsight, verdict, bullCase.thesis, bearCase.thesis. Keep all numbers/scores. Return only valid JSON.`;
-                const result = await model.generateContent(prompt);
-                const text = result.response.text();
-                const enh = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
-                if (enh.businessModel?.overview) report.businessModel.overview = enh.businessModel.overview;
-                if (enh.businessModel?.keyInsight) report.businessModel.keyInsight = enh.businessModel.keyInsight;
-                if (enh.verdict) report.verdict = enh.verdict;
-                if (enh.bullCase?.thesis) report.bullCase.thesis = enh.bullCase.thesis;
-                if (enh.bearCase?.thesis) report.bearCase.thesis = enh.bearCase.thesis;
-            } catch (e) { console.log('Gemini enhancement skipped:', e.message); }
-        }
+    const quote = {
+        symbol: quoteRaw.symbol || ticker,
+        shortName: quoteRaw.shortName || '',
+        longName: quoteRaw.longName || quoteRaw.shortName || '',
+        price: quoteRaw.regularMarketPrice,
+        marketCap: quoteRaw.marketCap,
+        sector: data.assetProfile?.sector || '',
+        industry: data.assetProfile?.industry || '',
+        fullTimeEmployees: data.assetProfile?.fullTimeEmployees,
+        dividendRate: quoteRaw.trailingAnnualDividendRate,
+        beta: quoteRaw.beta,
+        trailingPE: quoteRaw.trailingPE,
+        forwardPE: quoteRaw.forwardPE,
+        priceToSalesTrailing12Months: quoteRaw.priceToSalesTrailing12Months
+    };
 
-        res.json({ available: true, report, generatedAt: new Date().toISOString() });
-    } catch (err) {
-        console.error('Deep Research error:', err.message);
-        res.status(500).json({ error: err.message });
+    const fd = data.financialData || {};
+
+    // Convert old YF objects to what our generator understands
+    const incomeAnnual = (data.incomeStatementHistory?.incomeStatementHistory || []).map(i => ({ netIncome: i.netIncomeFromContinuingOps }));
+    const balanceSheet = (data.balanceSheetHistory?.balanceSheetStatements || []).map(b => ({ totalAssets: b.totalAssets }));
+    const cashflow = (data.cashflowStatementHistory?.cashflowStatements || []).map(c => ({
+        freeCashflow: (c.totalCashFromOperatingActivities || 0) + (c.capitalExpenditures || 0)
+    }));
+
+    // We don't have peer data natively without making 5 more sequential requests here, so we'll mock peers for the report
+    const peersData = { peers: [] };
+
+    let report = generateDeepResearch(quote, fd, incomeAnnual, balanceSheet, cashflow, peersData);
+
+    // Optionally enhance with Gemini
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey && apiKey !== 'your_api_key_here') {
+        try {
+            const { GoogleGenerativeAI } = await import('@google/generative-ai');
+            const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: 'gemini-2.0-flash' });
+            const prompt = `Enhance this stock research report for ${quote.longName || ticker} with richer analysis. Base report: ${JSON.stringify(report)}. Return same JSON structure with improved prose for businessModel.overview, businessModel.keyInsight, verdict, bullCase.thesis, bearCase.thesis. Keep all numbers/scores. Return only valid JSON.`;
+            const result = await model.generateContent(prompt);
+            const text = result.response.text();
+            const enh = JSON.parse(text.match(/\{[\s\S]*\}/)[0]);
+            if (enh.businessModel?.overview) report.businessModel.overview = enh.businessModel.overview;
+            if (enh.businessModel?.keyInsight) report.businessModel.keyInsight = enh.businessModel.keyInsight;
+            if (enh.verdict) report.verdict = enh.verdict;
+            if (enh.bullCase?.thesis) report.bullCase.thesis = enh.bullCase.thesis;
+            if (enh.bearCase?.thesis) report.bearCase.thesis = enh.bearCase.thesis;
+        } catch (e) { console.log('Gemini enhancement skipped:', e.message); }
     }
-});
+
+    const output = { available: true, report, generatedAt: new Date().toISOString() };
+    cache.set(cacheKey, output, 3600); // 1 hour
+    res.json(output);
+}));
 
 
 function generateAnalysis(quote, fd) {
@@ -498,38 +800,146 @@ function generateAnalysis(quote, fd) {
 
 
 // ─── Screener (cached) ───────────────────────────────────────
-let screenerCache = { data: null, ts: 0 };
-app.get('/api/screener', async (req, res) => {
-    try {
-        // Cache for 5 minutes since this is expensive
-        if (screenerCache.data && Date.now() - screenerCache.ts < 300000) {
-            return res.json(screenerCache.data);
+app.get('/api/screener', handleAsync(async (req, res) => {
+    const cacheKey = 'screener_data';
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    const SECTOR_STOCKS_UNIVERSE = {
+        "Technology": ["AAPL", "MSFT", "GOOGL", "META", "NVDA", "AMZN", "CRM", "ADBE", "ORCL", "INTC", "CSCO", "IBM", "TXN", "QCOM", "AMD"],
+        "Financial Services": ["JPM", "BAC", "GS", "MS", "WFC", "C", "BLK", "SCHW", "AXP", "USB", "PNC", "TFC", "COF", "CME", "ICE"],
+        "Healthcare": ["JNJ", "UNH", "PFE", "ABBV", "MRK", "TMO", "ABT", "LLY", "BMY", "AMGN", "DHR", "ISRG", "SYK", "MDT", "CVS"],
+        "Consumer Cyclical": ["TSLA", "HD", "NKE", "MCD", "SBUX", "TGT", "LOW", "TJX", "BKNG", "GM", "F", "YUM", "CMG", "MAR", "HLT"],
+        "Communication Services": ["GOOGL", "META", "DIS", "NFLX", "CMCSA", "T", "VZ", "TMUS", "CHTR", "SPOT", "EA", "TTWO", "OMC", "IPG"],
+        "Consumer Defensive": ["PG", "KO", "PEP", "WMT", "COST", "CL", "MDLZ", "PM", "MO", "GIS", "K", "HNZ", "SYY", "ADM", "TSN"],
+        "Energy": ["XOM", "CVX", "COP", "EOG", "SLB", "MPC", "PSX", "VLO", "OXY", "HAL", "BKR", "KMI", "WMB", "OKE", "TRGP"],
+        "Industrials": ["UNP", "HON", "UPS", "BA", "CAT", "DE", "GE", "LMT", "RTX", "WM", "CSX", "NSC", "FDX", "NOC", "GD"],
+        "Basic Materials": ["LIN", "APD", "SHW", "ECL", "DD", "NEM", "FCX", "NUE", "VMC", "MLM", "DOW", "LYB", "CTVA", "FMC", "ALB"],
+        "Real Estate": ["AMT", "PLD", "CCI", "EQIX", "SPG", "PSA", "O", "WELL", "DLR", "AVB", "EQR", "INVH", "AMH", "SUI", "ELS"],
+        "Utilities": ["NEE", "DUK", "SO", "D", "AEP", "SRE", "EXC", "XEL", "ED", "WEC", "ES", "PEG", "EIX", "AWK", "WTRG"]
+    };
+
+    const NEW_SECTORS = {
+        "Indexes": ["SPY", "DIA", "QQQ", "IWM", "VOO", "VTI", "IVV", "VUG", "VTV", "VNQ", "XLF", "XLV", "XLK"],
+        "AI": ["NVDA", "MSFT", "GOOGL", "AMD", "TSM", "PLTR", "SMCI", "AVGO", "ARM", "CRWD", "HPE", "DELL", "IBM", "META", "AMZN"],
+        "Penny Stocks": ["MVIS", "SENS", "ZOM", "CTRM", "SNDL", "GTE", "NAKD", "BNGO", "NCTY", "IDEX", "TNXP", "SOS", "XSPA", "IZEA", "OGEN"]
+    };
+
+    // Random selection function
+    const getRandom = (arr, n) => {
+        const shuffled = [...arr].sort(() => 0.5 - Math.random());
+        return shuffled.slice(0, n);
+    };
+
+    const CATEGORIES_TO_FETCH = {};
+    for (const [cat, pool] of Object.entries(NEW_SECTORS)) CATEGORIES_TO_FETCH[cat] = getRandom(pool, Math.min(12, pool.length));
+    for (const [sec, pool] of Object.entries(SECTOR_STOCKS_UNIVERSE)) CATEGORIES_TO_FETCH[sec] = getRandom(pool, Math.min(12, pool.length));
+
+    const allSymbols = new Set();
+    Object.values(CATEGORIES_TO_FETCH).forEach(syms => syms.forEach(s => allSymbols.add(s)));
+
+    const stockData = {};
+    const fetchPromises = Array.from(allSymbols).map(async (sym) => {
+        try {
+            const [q, data] = await Promise.all([
+                yahooFinance.quote(sym).catch(() => null),
+                yahooFinance.quoteSummary(sym, { modules: ['financialData', 'defaultKeyStatistics'] }).catch(() => ({}))
+            ]);
+
+            if (!q || !q.regularMarketPrice || !q.fiftyTwoWeekHigh || !q.fiftyTwoWeekLow) return;
+
+            const fd = data.financialData || {};
+            const price = q.regularMarketPrice;
+            const high52 = q.fiftyTwoWeekHigh;
+            const low52 = q.fiftyTwoWeekLow;
+
+            const pctFromHigh = ((price - high52) / high52) * 100;
+            const pctFromLow = ((price - low52) / low52) * 100;
+            const rangePos = high52 !== low52 ? ((price - low52) / (high52 - low52)) * 100 : 50;
+
+            stockData[sym] = {
+                symbol: q.symbol || sym,
+                name: q.shortName || q.longName || sym,
+                sector: q.sector || '',
+                industry: q.industry || '',
+                price: price,
+                change: Number((q.regularMarketChangePercent || 0).toFixed(2)),
+                marketCap: q.marketCap || data.defaultKeyStatistics?.totalAssets,
+                fiftyTwoWeekHigh: high52,
+                fiftyTwoWeekLow: low52,
+                pctFromHigh: Number(pctFromHigh.toFixed(2)),
+                pctFromLow: Number(pctFromLow.toFixed(2)),
+                rangePosition: Number(rangePos.toFixed(1)),
+                trailingPE: q.trailingPE,
+                forwardPE: q.forwardPE,
+                revenueGrowth: fd.revenueGrowth,
+                profitMargins: fd.profitMargins,
+                returnOnEquity: fd.returnOnEquity,
+                dividendYield: q.trailingAnnualDividendYield || q.yield,
+                beta: q.beta,
+                recommendationKey: fd.recommendationKey || '',
+                targetMeanPrice: fd.targetMeanPrice,
+                earningsGrowth: fd.earningsGrowth,
+                debtToEquity: fd.debtToEquity,
+                freeCashflow: fd.freeCashflow
+            };
+        } catch (e) {
+            // Ignore individual fetch errors
         }
-        const data = await new Promise((resolve, reject) => {
-            execFile(PYTHON, [FETCH_SCRIPT, 'screener', '_'], { timeout: 120000 }, (err, stdout, stderr) => {
-                if (err) return reject(new Error(stderr || err.message));
-                try { resolve(JSON.parse(stdout.trim())); }
-                catch (e) { reject(new Error('Invalid JSON from screener')); }
-            });
-        });
-        screenerCache = { data, ts: Date.now() };
-        res.json(data);
-    } catch (err) {
-        console.error('Screener error:', err.message);
-        res.status(500).json({ error: err.message });
+    });
+
+    await Promise.all(fetchPromises);
+
+    const sectors = {};
+    const order = ["Indexes", "AI", "Penny Stocks", ...Object.keys(SECTOR_STOCKS_UNIVERSE)];
+
+    for (const categoryName of order) {
+        const symbols = CATEGORIES_TO_FETCH[categoryName] || [];
+        const stocks = symbols.map(s => stockData[s]).filter(Boolean);
+
+        if (stocks.length > 0) {
+            const nearHigh = [...stocks].sort((a, b) => b.pctFromHigh - a.pctFromHigh).slice(0, 5);
+            const nearLow = [...stocks].sort((a, b) => a.pctFromLow - b.pctFromLow).slice(0, 5);
+
+            for (const s of stocks) {
+                let score = 0;
+                const reasons = [];
+                if (['buy', 'strong_buy'].includes(s.recommendationKey)) { score += 3; reasons.push("Strong Analyst Rating"); }
+                if ((s.revenueGrowth || 0) > 0.1) { score += 2; reasons.push(">10% Revenue Growth"); }
+                if ((s.profitMargins || 0) > 0.15) { score += 1; reasons.push(">15% Profit Margins"); }
+                if ((s.returnOnEquity || 0) > 0.15) { score += 1; reasons.push(">15% ROE"); }
+                s._topPickScore = score;
+                s.topPickReason = reasons.length ? reasons.join(" • ") : "Solid Fundamentals";
+            }
+
+            const topPicks = [...stocks].sort((a, b) => b._topPickScore - a._topPickScore).slice(0, 8);
+            sectors[categoryName] = { nearHigh, nearLow, topPicks, stockCount: stocks.length };
+        }
     }
-});
+
+    const output = { sectors };
+    cache.set(cacheKey, output, 300); // 5 min cache
+    res.json(output);
+}));
 
 // ─── Search ──────────────────────────────────────────────────
-app.get('/api/search/:query', async (req, res) => {
+app.get('/api/search/:query', handleAsync(async (req, res) => {
+    const query = req.params.query;
     try {
-        const results = await fetchFromPython('search', req.params.query);
-        res.json(Array.isArray(results) ? results : []);
+        const results = await yahooFinance.search(query);
+        const quotes = (results.quotes || [])
+            .filter(q => q.quoteType === 'EQUITY' || q.quoteType === 'ETF')
+            .slice(0, 8)
+            .map(q => ({
+                symbol: q.symbol || '',
+                name: q.shortname || q.longname || q.symbol || '',
+                exchange: q.exchDisp || q.exchange || ''
+            }));
+        res.json(quotes);
     } catch (err) {
         console.error('Search error:', err.message);
         res.json([]);
     }
-});
+}));
 
 // Serve React app in production
 if (process.env.NODE_ENV === 'production') {

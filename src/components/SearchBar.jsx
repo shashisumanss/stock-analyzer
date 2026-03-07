@@ -37,6 +37,7 @@ export default function SearchBar({ onSelect }) {
             setIsSearching(true);
             try {
                 const res = await fetch(`/api/search/${encodeURIComponent(query)}`);
+                if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
                 setResults(data);
                 setShowDropdown(data.length > 0);

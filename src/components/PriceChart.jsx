@@ -177,7 +177,7 @@ export default function PriceChart({ ticker }) {
         setPriceInfo(null);
 
         fetch(`/api/history/${ticker}?range=${range.period}&interval=${range.interval}`)
-            .then(r => r.json())
+            .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); })
             .then(d => {
                 if (Array.isArray(d) && d.length > 0) {
                     setData(d);

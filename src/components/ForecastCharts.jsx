@@ -54,7 +54,7 @@ export default function ForecastCharts({ ticker }) {
     useEffect(() => {
         setLoading(true);
         fetch(`/api/analyst/${ticker}`)
-            .then(r => r.json())
+            .then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); })
             .then(d => { setData(d); setLoading(false); })
             .catch(() => setLoading(false));
     }, [ticker]);

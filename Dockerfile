@@ -10,10 +10,6 @@ RUN npm run build
 FROM node:20-alpine AS backend-server
 WORKDIR /app
 
-# Install Python & libraries needed for yfinance, and tzdata for pandas timezone support
-RUN apk add --no-cache python3 py3-pip g++ make tzdata \
-    && pip3 install --no-cache-dir --break-system-packages yfinance pandas numpy
-
 # Copy backend node config and install prod dependencies
 COPY package*.json ./
 RUN npm install --production
@@ -22,7 +18,7 @@ RUN npm install --production
 COPY --from=frontend-builder /app/dist ./dist
 
 # Copy specific backend files (excluding frontend source code)
-COPY server.js valuation.js fetch_data.py ./
+COPY server.js valuation.js ./
 
 # Expose port (Cloud Run defaults to PORT 8080 or sets the PORT env var)
 ENV NODE_ENV=production
