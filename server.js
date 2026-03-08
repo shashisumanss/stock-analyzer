@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 import { resolve, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { calculateFairValue } from './valuation.js';
-import yahooFinance from 'yahoo-finance2';
+import YahooFinance from 'yahoo-finance2';
 import NodeCache from 'node-cache';
 
 dotenv.config();
@@ -12,6 +12,7 @@ dotenv.config();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
+const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 
 // General cache configuration
 const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 }); // 1 min default TTL
