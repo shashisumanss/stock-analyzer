@@ -1,14 +1,17 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import MetricCard from './MetricCard';
 import FairValueGauge from './FairValueGauge';
-import PriceChart from './PriceChart';
 import Scorecard from './Scorecard';
 import ProsCons from './ProsCons';
-import AnalystRatings from './AnalystRatings';
-import ForecastCharts from './ForecastCharts';
-import PeerComparison from './PeerComparison';
-import DeepResearch from './DeepResearch';
 import AdBanner from './AdBanner';
+import NewsTab from './NewsTab';
+
+// Lazy load heavy components
+const PriceChart = React.lazy(() => import('./PriceChart'));
+const AnalystRatings = React.lazy(() => import('./AnalystRatings'));
+const ForecastCharts = React.lazy(() => import('./ForecastCharts'));
+const PeerComparison = React.lazy(() => import('./PeerComparison'));
+const DeepResearch = React.lazy(() => import('./DeepResearch'));
 
 function formatLargeNumber(num) {
     if (num == null) return 'N/A';
@@ -23,7 +26,7 @@ function formatPercent(val) {
     return `${(val * 100).toFixed(2)}%`;
 }
 
-const TABS = ['Overview', 'Fair Value', 'Financials', 'Peers', 'AI Analysis', 'Deep Research'];
+const TABS = ['Overview', 'Fair Value', 'Financials', 'News', 'Peers', 'AI Analysis', 'Deep Research'];
 
 export default function StockDashboard({ ticker, onBack }) {
     const [activeTab, setActiveTab] = useState('Overview');
@@ -130,24 +133,29 @@ export default function StockDashboard({ ticker, onBack }) {
 
             {/* Tab content */}
             <div className="tab-content">
-                {activeTab === 'Overview' && (
-                    <OverviewTab quote={quote} financials={financials} fairValue={fairValue} ticker={ticker} />
-                )}
-                {activeTab === 'Fair Value' && (
-                    <FairValueTab fairValue={fairValue} quote={quote} />
-                )}
-                {activeTab === 'Financials' && (
-                    <FinancialsTab financials={financials} />
-                )}
-                {activeTab === 'Peers' && (
-                    <PeersTab ticker={ticker} quote={quote} />
-                )}
-                {activeTab === 'AI Analysis' && (
-                    <AITab analysis={aiAnalysis} />
-                )}
-                {activeTab === 'Deep Research' && (
-                    <DeepResearch ticker={ticker} />
-                )}
+                <Suspense fallback={<div className="dashboard-loading"><div className="loading-content"><div className="spinner large" /></div></div>}>
+                    {activeTab === 'Overview' && (
+                        <OverviewTab quote={quote} financials={financials} fairValue={fairValue} ticker={ticker} />
+                    )}
+                    {activeTab === 'Fair Value' && (
+                        <FairValueTab fairValue={fairValue} quote={quote} />
+                    )}
+                    {activeTab === 'Financials' && (
+                        <FinancialsTab financials={financials} />
+                    )}
+                    {activeTab === 'News' && (
+                        <NewsTab ticker={ticker} />
+                    )}
+                    {activeTab === 'Peers' && (
+                        <PeersTab ticker={ticker} quote={quote} />
+                    )}
+                    {activeTab === 'AI Analysis' && (
+                        <AITab analysis={aiAnalysis} />
+                    )}
+                    {activeTab === 'Deep Research' && (
+                        <DeepResearch ticker={ticker} />
+                    )}
+                </Suspense>
             </div>
         </div>
     );
@@ -286,8 +294,8 @@ function FinancialsTab({ financials }) {
             <div className="section-card">
                 <h3>Financial Health</h3>
                 <div className="metrics-grid">
-                    <MetricCard label="Revenue" value={formatLargeNumber(fd.totalRevenue)} trend={Number.isFinite(fd.revenueGrowth) ? `${(fd.revenueGrowth * 100).toFixed(1)}%` : null} trendUp={fd.revenueGrowth > 0} />
-                    <MetricCard label="Gross Profit" value={formatLargeNumber(fd.grossProfits)} />
+                    <MetricCard label="Revenue" value={formatLargeNumber(fd.totalRevenue)} trend={fd.revenueGrowth != null && !isNaN(fd.revenueGrowth) ? fd.revenueGrowth * 100 : null} />
+                    <MetricCard label="Gross Margin" value={fd.grossMargins != null ? formatPercent(fd.grossMargins) : 'N/A'} />
                     <MetricCard label="Profit Margin" value={fd.profitMargins != null ? formatPercent(fd.profitMargins) : 'N/A'} />
                     <MetricCard label="Operating Margin" value={fd.operatingMargins != null ? formatPercent(fd.operatingMargins) : 'N/A'} />
                     <MetricCard label="EBITDA" value={formatLargeNumber(fd.ebitda)} />

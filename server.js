@@ -1,4 +1,5 @@
 import express from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { resolve, dirname, join } from 'path';
@@ -17,6 +18,7 @@ const yahooFinance = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
 // General cache configuration
 const cache = new NodeCache({ stdTTL: 60, checkperiod: 120 }); // 1 min default TTL
 
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 
@@ -252,6 +254,33 @@ app.get('/api/history/:ticker', handleAsync(async (req, res) => {
 
     cache.set(cacheKey, mapped, 3600); // 1 hour cache
     res.json(mapped);
+}));
+
+// ─── News ──────────────────────────────────────────────────────
+app.get('/api/news/:ticker', handleAsync(async (req, res) => {
+    const ticker = req.params.ticker.toUpperCase();
+    const cacheKey = `news_${ticker}`;
+    if (cache.has(cacheKey)) return res.json(cache.get(cacheKey));
+
+    try {
+        const newsRaw = await yahooFinance.search(ticker, { newsCount: 5 });
+        const news = newsRaw.news || [];
+
+        const mappedNews = news.map(item => ({
+            title: item.title,
+            publisher: item.publisher,
+            link: item.link,
+            providerPublishTime: item.providerPublishTime,
+            type: item.type,
+            uuid: item.uuid
+        }));
+
+        cache.set(cacheKey, mappedNews, 900); // 15 minutes cache
+        res.json(mappedNews);
+    } catch (err) {
+        // Return empty array on news failure rather than breaking the UI
+        res.json([]);
+    }
 }));
 
 // ─── Analyst Ratings & Forecasts ─────────────────────────────
